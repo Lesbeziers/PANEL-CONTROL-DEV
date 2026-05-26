@@ -13,9 +13,11 @@
   const GANTT_BODY_SELECTOR = "#left-body, #right-body, .month-block__body-grid";
   const BLOCK_HEADER_GREEN_CLASS = "blockHeader--green";
   const BLOCK_HEADER_YELLOW_CLASS = "blockHeader--yellow";
+  const BLOCK_HEADER_PURPLE_CLASS = "blockHeader--purple";
   const GANTT_BLOCK_HEADER_CLASS = "ganttBlockHeader";
   const GANTT_BLOCK_GREEN_CLASS = "ganttBlockGreen";
   const GANTT_BLOCK_YELLOW_CLASS = "ganttBlockYellow";
+  const GANTT_BLOCK_PURPLE_CLASS = "ganttBlockPurple";
   const BLOCK_DAY_COUNT_CLASS = "ganttBlockDayCount";
   const BLOCK_OVER_MAX_CLASS = "ganttOverMax";
   const FOCUS_DIM_CLASS = "ganttFocusDim";
@@ -31,8 +33,11 @@
   const BAR_HOVER_FOCUS_DELAY_MS = 140;
   const BAND_COLOR_GREEN = "#b5d2b3";
   const BAND_COLOR_YELLOW = "#fbdd9a";
+  const BAND_COLOR_PURPLE = "#dcc4f0";
   const HEADER_COLOR_GREEN = "#8fb596";
   const HEADER_COLOR_YELLOW = "#e8cd8e";
+  const HEADER_COLOR_PURPLE_DARK = "#aa87c6";
+  const HEADER_COLOR_PURPLE_LIGHT = "#c7a8e5";
   const MONTH_LABEL_TO_NUMBER = {
     enero: 1,
     febrero: 2,
@@ -544,6 +549,10 @@
       return BLOCK_HEADER_YELLOW_CLASS;
     }
 
+    if (headerRow.classList.contains(GANTT_BLOCK_PURPLE_CLASS)) {
+      return BLOCK_HEADER_PURPLE_CLASS;
+    }
+
     if (headerRow.classList.contains(BLOCK_HEADER_GREEN_CLASS)) {
       headerRow.classList.add(GANTT_BLOCK_GREEN_CLASS);
       return BLOCK_HEADER_GREEN_CLASS;
@@ -552,6 +561,11 @@
     if (headerRow.classList.contains(BLOCK_HEADER_YELLOW_CLASS)) {
       headerRow.classList.add(GANTT_BLOCK_YELLOW_CLASS);
       return BLOCK_HEADER_YELLOW_CLASS;
+    }
+
+    if (headerRow.classList.contains(BLOCK_HEADER_PURPLE_CLASS)) {
+      headerRow.classList.add(GANTT_BLOCK_PURPLE_CLASS);
+      return BLOCK_HEADER_PURPLE_CLASS;
     }
 
     const inlineGroupBg = headerRow.style.getPropertyValue("--group-bg");
@@ -565,6 +579,12 @@
       headerRow.classList.add(BLOCK_HEADER_YELLOW_CLASS);
       headerRow.classList.add(GANTT_BLOCK_YELLOW_CLASS);
       return BLOCK_HEADER_YELLOW_CLASS;
+    }
+
+    if (matchesColor(inlineGroupBg, HEADER_COLOR_PURPLE_DARK) || matchesColor(inlineGroupBg, HEADER_COLOR_PURPLE_LIGHT)) {
+      headerRow.classList.add(BLOCK_HEADER_PURPLE_CLASS);
+      headerRow.classList.add(GANTT_BLOCK_PURPLE_CLASS);
+      return BLOCK_HEADER_PURPLE_CLASS;
     }
 
     const rowBg = window.getComputedStyle(headerRow).backgroundColor;
@@ -581,6 +601,13 @@
       headerRow.classList.add(BLOCK_HEADER_YELLOW_CLASS);
       headerRow.classList.add(GANTT_BLOCK_YELLOW_CLASS);
       return BLOCK_HEADER_YELLOW_CLASS;
+    }
+
+    if (matchesColor(rowBg, HEADER_COLOR_PURPLE_DARK) || matchesColor(cellBg, HEADER_COLOR_PURPLE_DARK)
+        || matchesColor(rowBg, HEADER_COLOR_PURPLE_LIGHT) || matchesColor(cellBg, HEADER_COLOR_PURPLE_LIGHT)) {
+      headerRow.classList.add(BLOCK_HEADER_PURPLE_CLASS);
+      headerRow.classList.add(GANTT_BLOCK_PURPLE_CLASS);
+      return BLOCK_HEADER_PURPLE_CLASS;
     }
 
     return null;
@@ -616,6 +643,10 @@
 
     if (headerClass === BLOCK_HEADER_GREEN_CLASS) {
       return BAND_COLOR_GREEN;
+    }
+
+    if (headerClass === BLOCK_HEADER_PURPLE_CLASS) {
+      return BAND_COLOR_PURPLE;
     }
 
     return null;
