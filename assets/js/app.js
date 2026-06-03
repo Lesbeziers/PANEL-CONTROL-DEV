@@ -223,10 +223,13 @@ let blocks = [
   createBlock({ id: "block-26", blockType: "Pre Roll", headerColor: "#aa87c6", maxSimultaneous: null }),
   createSeparatorBlock({ id: "separator-4", label: "UPSELL" }),
   createBlock({ id: "block-27", blockType: "Promo 20", headerColor: "#aa87c6", maxSimultaneous: null }),
+  createBlock({ id: "block-32", blockType: "Promo 40", headerColor: "#c7a8e5", maxSimultaneous: null }),
+  createBlock({ id: "block-33", blockType: "Otras Duraciones", headerColor: "#aa87c6", maxSimultaneous: null }),
   createBlock({ id: "block-28", blockType: "Bumper", headerColor: "#c7a8e5", maxSimultaneous: null }),
   createBlock({ id: "block-29", blockType: "Pasos a Publi", headerColor: "#aa87c6", maxSimultaneous: null }),
   createBlock({ id: "block-30", blockType: "Intruso", headerColor: "#c7a8e5", maxSimultaneous: null }),
-  createBlock({ id: "block-31", blockType: "Loop", headerColor: "#aa87c6", maxSimultaneous: null }),
+  createBlock({ id: "block-34", blockType: "Pre Roll", headerColor: "#aa87c6", maxSimultaneous: null }),
+  createBlock({ id: "block-31", blockType: "Loop", headerColor: "#c7a8e5", maxSimultaneous: null }),
 ];
 let contextMenu = { open: false, x: 0, y: 0, blockIndex: -1, rowIndex: -1 };
 let menuElement = null;
@@ -258,7 +261,6 @@ let suppressNextGridClick = false;
 let genreTypeBuffer = "";
 let genreTypeBufferTimestamp = 0;
 const GENRE_TYPE_BUFFER_TIMEOUT_MS = 700;
-const MAX_AUTO_INSERT = 50;
 const TOAST_DURATION_MS = 3200;
 const HISTORY_LIMIT = 200;
 const HISTORY_GROUP_WINDOW_MS = 650;
@@ -3571,17 +3573,13 @@ function handleGridPaste(event) {
       let targetRowKeys = visibleInRange.map((item) => item.row?.rowKey).filter(Boolean);
 
       // Insertar filas extra si el portapapeles tiene más líneas que el rango
-      const missingRows = Math.max(0, pasteValues.length - rangeSize);
-      const rowsToInsert = Math.min(missingRows, MAX_AUTO_INSERT);
+      const rowsToInsert = Math.max(0, pasteValues.length - rangeSize);
       if (rowsToInsert > 0) {
         const lastSourceIndex = Math.max(...visibleInRange.map((i) => i.sourceIndex));
         insertRows(dragSelection.blockIndex, lastSourceIndex + 1, rowsToInsert, { historyType: "paste" });
         const updatedBlock = blocks[dragSelection.blockIndex];
         const newRows = updatedBlock?.rows?.slice(lastSourceIndex + 1, lastSourceIndex + 1 + rowsToInsert) || [];
         targetRowKeys = targetRowKeys.concat(newRows.map((r) => r?.rowKey).filter(Boolean));
-        if (missingRows > MAX_AUTO_INSERT) {
-          showGridToast(`Se han creado ${MAX_AUTO_INSERT} filas. El resto del pegado se ha recortado.`);
-        }
       }
 
       const maxPaste = Math.min(pasteValues.length, targetRowKeys.length);
@@ -3601,7 +3599,7 @@ function handleGridPaste(event) {
     let anchorVisIdx = orderedRows.findIndex((item) => item.row?.rowKey === anchorRowId);
     if (anchorVisIdx < 0) anchorVisIdx = 0;
 
-const pasteCount = Math.min(clipboardLines.length, MAX_AUTO_INSERT);
+const pasteCount = clipboardLines.length;
 
     const anchorIsPlaceholder = !!orderedRows[anchorVisIdx]?.row?._autoPlaceholder;
 
@@ -3624,9 +3622,6 @@ const pasteCount = Math.min(clipboardLines.length, MAX_AUTO_INSERT);
       const updatedBlock = blocks[selectedMeta.blockIndex];
       const newRows = updatedBlock?.rows?.slice(lastVisSourceIndex + 1, lastVisSourceIndex + 1 + missing) || [];
       targetRowKeys = targetRowKeys.concat(newRows.map((r) => r?.rowKey).filter(Boolean));
-      if (clipboardLines.length > MAX_AUTO_INSERT) {
-        showGridToast(`Se han creado ${MAX_AUTO_INSERT} filas. El resto del pegado se ha recortado.`);
-      }
     }
 
     const maxPaste = clipboardLines.length > 1
