@@ -77,7 +77,7 @@ function newRow() {
     _autoPlaceholder: false,
     id: "",
     blockType: "",
-    listo: false,
+    listoByMonth: {},
     actualizado: false,
     title: "",
     genre: "",
@@ -101,6 +101,113 @@ function newRowForBlock(blockType, homeContext = DEFAULT_CALENDAR_CONTEXT) {
     row.homeYear = homeContext.year;
   }
   return row;
+}
+
+// ── Estado de emisión "LISTO" por mes ────────────────────────────────────────
+// El check no es una propiedad de la pieza, sino un hecho mensual: indica si la
+// pieza se ha emitido en un mes concreto. Por eso se guarda en un mapa
+// row.listoByMonth = { "YYYY-MM": true, ... } y NO en un único booleano.
+// En el Excel se persiste en la propia columna LISTO como la lista de meses
+// emitidos (p. ej. "2026-06;2026-07"), sin columnas nuevas ni filas duplicadas.
+function monthKeyOf(month, year) {
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+function monthKeyFor(ctx = currentCalendarContext) {
+  return monthKeyOf(ctx.month, ctx.year);
+}
+
+function ctxFromMonthKey(key) {
+  const match = /^(\d{4})-(\d{2})$/.exec(`${key ?? ""}`);
+  if (!match) {
+    return currentCalendarContext;
+  }
+  return { year: Number.parseInt(match[1], 10), month: Number.parseInt(match[2], 10) };
+}
+
+function getRowListo(row, ctx = currentCalendarContext) {
+  const map = row?.listoByMonth;
+  if (!map || typeof map !== "object") {
+    return false;
+  }
+  return !!map[monthKeyFor(ctx)];
+}
+
+function setRowListo(row, value, ctx = currentCalendarContext) {
+  if (!row) {
+    return;
+  }
+  if (!row.listoByMonth || typeof row.listoByMonth !== "object") {
+    row.listoByMonth = {};
+  }
+  const key = monthKeyFor(ctx);
+  if (value) {
+    row.listoByMonth[key] = true;
+  } else {
+    delete row.listoByMonth[key];
+  }
+}
+
+function rowHasAnyListo(row) {
+  const map = row?.listoByMonth;
+  if (!map || typeof map !== "object") {
+    return false;
+  }
+  return Object.keys(map).some((key) => map[key]);
+}
+
+// Serializa el mapa de meses emitidos para guardarlo en la celda LISTO del Excel.
+function encodeListoByMonth(map) {
+  if (!map || typeof map !== "object") {
+    return "";
+  }
+  return Object.keys(map)
+    .filter((key) => map[key])
+    .sort()
+    .join(";");
+}
+
+function isLegacyListoTruthy(rawValue) {
+  if (rawValue === true) {
+    return true;
+  }
+  const text = `${rawValue ?? ""}`.trim().toLowerCase();
+  return ["true", "1", "x", "si", "sí", "verdadero"].includes(text);
+}
+
+// Reconstruye row.listoByMonth desde el valor crudo de la celda LISTO del Excel.
+// Debe llamarse DESPUÉS de haber parseado las fechas de la fila (necesita el rango).
+//  - Formato nuevo: lista de meses emitidos "YYYY-MM;YYYY-MM" → esos meses.
+//  - Formato antiguo (booleano/texto "verdadero"): como antes el check se
+//    compartía entre todos los meses de la pieza, se marca emitido en todo su
+//    rango para preservar el estado visible previo (sin perder datos).
+function applyImportedListo(row, rawValue) {
+  const map = {};
+  const tokens = `${rawValue ?? ""}`.match(/\d{4}-\d{2}/g);
+  if (tokens && tokens.length) {
+    tokens.forEach((token) => { map[token] = true; });
+    row.listoByMonth = map;
+    return;
+  }
+
+  if (isLegacyListoTruthy(rawValue)) {
+    const range = getRowRange(row);
+    if (range) {
+      let year = range.startDate.getFullYear();
+      let month = range.startDate.getMonth() + 1;
+      const endYear = range.endDate.getFullYear();
+      const endMonth = range.endDate.getMonth() + 1;
+      while (year < endYear || (year === endYear && month <= endMonth)) {
+        map[monthKeyOf(month, year)] = true;
+        month += 1;
+        if (month > 12) { month = 1; year += 1; }
+      }
+    } else {
+      map[monthKeyOf(row.homeMonth, row.homeYear)] = true;
+    }
+  }
+
+  row.listoByMonth = map;
 }
 
 function normalizeMaxSimultaneous(value) {
@@ -281,6 +388,9 @@ let preSearchCollapseState = null;
 function cloneRowData(row) {
   return {
     ...row,
+    // Copia profunda del mapa de emisión por mes para que las filas clonadas
+    // (duplicar, deshacer/rehacer) no compartan el mismo objeto.
+    listoByMonth: { ...(row?.listoByMonth || {}) },
   };
 }
 
@@ -465,7 +575,7 @@ function applyPatch(patch, direction) {
     if (patch.columnKey === "title") {
       row.title = normalized;
     } else if (patch.columnKey === "listo") {
-      row.listo = normalized;
+      setRowListo(row, normalized, patch.monthKey ? ctxFromMonthKey(patch.monthKey) : currentCalendarContext);
     } else if (DATE_COLUMNS.has(patch.columnKey)) {
       applyDateCellValue(row, patch.columnKey, normalized, { preserveRawOnInvalid: true });
     } else if (patch.columnKey === "genre") {
@@ -582,6 +692,9 @@ function createSetCellPatch(meta, before, after) {
     rowIndex: meta.rowIndex,
     rowKey: meta.rowKey,
     columnKey: meta.columnKey,
+    // Para LISTO (estado por mes) guardamos el mes al que aplica el cambio, de
+    // modo que deshacer/rehacer afecte al mes correcto aunque se haya navegado.
+    monthKey: meta.monthKey,
     before,
     after,
   };
@@ -837,6 +950,8 @@ function copyRowDataInto(sourceRow, targetRow) {
   return {
     ...targetRow,
     ...sourceData,
+    // Copia profunda para no compartir el mapa de emisión con la fila origen.
+    listoByMonth: { ...(sourceData.listoByMonth || {}) },
     rowKey: targetRow.rowKey,
   };
 }
@@ -1520,6 +1635,7 @@ function importRowsFromExcelMatrix(matrix) {
     importedRow.homeMonth = currentCalendarContext.month;
     importedRow.homeYear = currentCalendarContext.year;
 
+    let rawListoValue;
     Object.keys(EXCEL_COLUMN_ALIASES).forEach((columnKey) => {
       const sourceIndex = mapping[columnKey];
       if (!Number.isInteger(sourceIndex)) {
@@ -1539,9 +1655,18 @@ function importRowsFromExcelMatrix(matrix) {
         return;
       }
 
+      if (columnKey === "listo") {
+        // El estado de emisión se procesa tras el bucle, cuando ya se han
+        // parseado las fechas (necesarias para migrar datos antiguos al rango).
+        rawListoValue = rowValues[sourceIndex];
+        return;
+      }
+
       const parsedValue = parseCellValue(columnKey, normalizedValue);
       importedRow[columnKey] = parsedValue;
     });
+
+    applyImportedListo(importedRow, rawListoValue);
 
     const hasDateErrors = !!importedRow.startDateError || !!importedRow.endDateError || !!importedRow.dateRangeError;
     if (hasDateErrors) {
@@ -1766,7 +1891,7 @@ async function buildExcelEdicionBuffer() {
 
       monthRows.forEach((row) => {
         const dataRow = ws.addRow([
-          row.listo,
+          encodeListoByMonth(row.listoByMonth) || null,
           row.title       || null,
           row.startDateText || null,
           row.endDateText   || null,
@@ -2097,7 +2222,7 @@ function isPlaceholderRow(row) {
     return false;
   }
 
-  return !row.listo
+  return !rowHasAnyListo(row)
     && !`${row.title ?? ""}`.trim()
     && !`${row.genre ?? ""}`.trim()
     && !`${row.id ?? ""}`.trim()
@@ -2125,7 +2250,7 @@ function intersectsVisibleMonth(rowRange, monthRange) {
 function getSortValue(row, key) {
   if (key === "startDate") { return row.startDateISO || "\uffff"; }
   if (key === "endDate")   { return row.endDateISO   || "\uffff"; }
-  if (key === "listo")     { return row.listo ? 0 : 1; }
+  if (key === "listo")     { return getRowListo(row) ? 0 : 1; }
   return `${row[key] ?? ""}`.toLocaleLowerCase("es-ES");
 }
 
@@ -2357,10 +2482,10 @@ function setCellValue(cell, rawValue, historyOptions = {}) {
       titleText.title = row.title;
     }
   } else if (meta.columnKey === "listo") {
-    row.listo = parsedValue;
+    setRowListo(row, parsedValue);
     const checkbox = cell.querySelector('input[type="checkbox"]');
     if (checkbox) {
-      checkbox.checked = row.listo;
+      checkbox.checked = getRowListo(row);
     }
     // Sincronizar el checkbox del header del bloque
     const blockIndex = Number.parseInt(cell.dataset.blockIndex, 10);
@@ -2369,7 +2494,7 @@ function setCellValue(cell, rawValue, historyOptions = {}) {
       const realRows = getOrderedRowsForMonth(block, currentCalendarContext)
         .filter((item) => item.isVisibleInCurrentMonth && !item.row._autoPlaceholder)
         .map((item) => item.row);
-      const allListo = realRows.length > 0 && realRows.every((r) => !!r.listo);
+      const allListo = realRows.length > 0 && realRows.every((r) => getRowListo(r));
       const leftBody = document.getElementById("left-body");
       if (leftBody) {
         const groupRows = leftBody.querySelectorAll(".left-row--group");
@@ -2400,8 +2525,12 @@ function setCellValue(cell, rawValue, historyOptions = {}) {
 
   const after = getCellRawValue(row, meta.columnKey);
   if (before !== after) {
+    const patchMeta = { ...meta, rowKey: row.rowKey };
+    if (meta.columnKey === "listo") {
+      patchMeta.monthKey = monthKeyFor();
+    }
     addPatchToCurrentAction(
-      createSetCellPatch({ ...meta, rowKey: row.rowKey }, before, after),
+      createSetCellPatch(patchMeta, before, after),
       {
         type: historyOptions.type || "edit",
         groupKey: historyOptions.groupKey || `${meta.blockIndex}:${meta.rowIndex}:${meta.columnKey}`,
@@ -2618,7 +2747,7 @@ function getCellRawValue(row, columnKey) {
   }
 
   if (columnKey === "listo") {
-    return row.listo ? "true" : "";
+    return getRowListo(row) ? "true" : "";
   }
 
   if (columnKey === "title") {
@@ -4334,7 +4463,7 @@ function attachListoCheckbox(cell, row) {
   const input = document.createElement("input");
   input.type = "checkbox";
   input.className = "listo-checkbox";
-  input.checked = !!row.listo;
+  input.checked = getRowListo(row);
   input.setAttribute("aria-label", "Marcar LISTO");
 
   if (IS_VIEWER_MODE) {
@@ -4344,10 +4473,10 @@ function attachListoCheckbox(cell, row) {
     return;
   }
 
-  const toggleListo = (nextValue = !row.listo) => {
+  const toggleListo = (nextValue = !getRowListo(row)) => {
     if (IS_VIEWER_MODE) { return; }
     setCellValue(cell, nextValue ? "true" : "", { type: "toggle", groupKey: `${cell.dataset.blockIndex}:${cell.dataset.rowIndex}:listo` });
-    input.checked = row.listo;
+    input.checked = getRowListo(row);
   };
 
   input.addEventListener("change", () => {
@@ -4389,22 +4518,27 @@ function attachBlockListoCheckbox(cell, block) {
     const visibleRows = getOrderedRowsForMonth(block, currentCalendarContext)
       .filter((item) => item.isVisibleInCurrentMonth && !item.row._autoPlaceholder)
       .map((item) => item.row);
-    input.checked = visibleRows.length > 0 && visibleRows.every((row) => !!row.listo);
+    input.checked = visibleRows.length > 0 && visibleRows.every((row) => getRowListo(row));
   };
 
   const toggleBlock = () => {
     if (IS_VIEWER_MODE) { return; }
+    // El check de bloque solo afecta a las piezas visibles en el mes actual, y
+    // marca/desmarca su estado de emisión de ESE mes (no el de otros meses).
     const realRows = getOrderedRowsForMonth(block, currentCalendarContext)
       .filter((item) => item.isVisibleInCurrentMonth && !item.row._autoPlaceholder)
       .map((item) => item.row);
-    const targetValue = !(realRows.length > 0 && realRows.every((row) => !!row.listo));
+    const targetValue = !(realRows.length > 0 && realRows.every((row) => getRowListo(row)));
+    const visibleKeys = new Set(realRows.map((row) => row.rowKey));
+    const monthKey = monthKeyFor();
     withHistoryAction("toggle", { groupKey: `toggle-block:${block.id}` }, () => {
       block.rows.forEach((row, rowIndex) => {
+        if (!visibleKeys.has(row.rowKey)) { return; }
         const before = getCellRawValue(row, "listo");
         const after = targetValue ? "true" : "";
         if (before !== after) {
-          addPatchToCurrentAction(createSetCellPatch({ blockIndex: blocks.findIndex((candidate) => candidate.id === block.id), rowIndex, rowKey: row.rowKey, columnKey: "listo" }, before, after), { type: "toggle", groupKey: `toggle-block:${block.id}` });
-          row.listo = targetValue;
+          addPatchToCurrentAction(createSetCellPatch({ blockIndex: blocks.findIndex((candidate) => candidate.id === block.id), rowIndex, rowKey: row.rowKey, columnKey: "listo", monthKey }, before, after), { type: "toggle", groupKey: `toggle-block:${block.id}` });
+          setRowListo(row, targetValue);
         }
       });
       renderRows();
