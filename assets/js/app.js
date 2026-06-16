@@ -9,7 +9,7 @@ const columns = [
     label: "GÉNERO",
     type: "text",
     cellType: "select",
-    options: ["Caza y Pesca", "Cine", "Deportes", "Entretenimiento", "Ficción", "No Ficción", "Series"],
+    options: ["Caza y Pesca", "Cine Compra", "Cine Original", "Deportes", "Documentales", "Entretenimiento", "M+", "No Ficción", "Series Compra", "Series Originales"],
   },
   { key: "id", label: "ID", type: "text" },
 ];
@@ -1414,13 +1414,16 @@ function parseCellValue(columnKey, rawValue) {
   }
 
   if (column?.cellType === "select") {
-    const normalizedInput = textValue.trim().toLocaleLowerCase();
-    if (!normalizedInput) {
+    const trimmedInput = textValue.trim();
+    if (!trimmedInput) {
       return "";
     }
 
+    const normalizedInput = trimmedInput.toLocaleLowerCase();
     const matchedOption = column.options?.find((option) => option.toLocaleLowerCase() === normalizedInput);
-    return matchedOption || "";
+    // Preserve unrecognised values (e.g. legacy genres from older Excel exports)
+    // so that data never gets silently wiped during import / paste.
+    return matchedOption || trimmedInput;
   }
 
   if (DATE_COLUMNS.has(columnKey)) {
