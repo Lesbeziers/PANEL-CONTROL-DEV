@@ -5338,7 +5338,6 @@ function renderMonthBlockGrid(root) {
           </div>
           ${IS_VIEWER_MODE ? `` : `
           <div class="presence-indicator" id="presence-indicator" data-state="loading" role="status" aria-live="polite" title="Comprobando otras sesiones activas…">
-            <span class="presence-indicator__icon" aria-hidden="true">👥</span>
             <span class="presence-indicator__count">…</span>
           </div>
           `}

@@ -1261,22 +1261,20 @@ body {
 .presence-indicator {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
   margin-left: 12px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 13px;
-  font-weight: 700;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  font-size: 14px;
+  font-weight: 800;
   line-height: 1;
-  border: 1px solid transparent;
-  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+  color: #ffffff;
+  background: #c5cdd6;
+  transition: background-color 0.18s ease;
   cursor: help;
   user-select: none;
-  white-space: nowrap;
-}
-
-.presence-indicator__icon {
-  font-size: 14px;
+  flex-shrink: 0;
 }
 
 .presence-indicator__count {
@@ -1284,33 +1282,23 @@ body {
 }
 
 .presence-indicator[data-state="loading"] {
-  background: #f1f5f9;
-  border-color: #e2e8f0;
-  color: #64748b;
+  background: #c5cdd6;
 }
 
 .presence-indicator[data-state="offline"] {
-  background: #f1f5f9;
-  border-color: #e2e8f0;
-  color: #94a3b8;
+  background: #94a3b8;
 }
 
 .presence-indicator[data-state="alone"] {
-  background: #e8f5ec;
-  border-color: #b9dbc4;
-  color: #1f6f3b;
+  background: #2eb84e;
 }
 
 .presence-indicator[data-state="paired"] {
-  background: #fff4d4;
-  border-color: #f0d68a;
-  color: #8a5a07;
+  background: #f1ae15;
 }
 
 .presence-indicator[data-state="busy"] {
-  background: #ffe1cf;
-  border-color: #f4a86b;
-  color: #a04a0a;
+  background: #e8442b;
 }
 
 /* ── Filas atenuadas por búsqueda ─────────────────────────── */
