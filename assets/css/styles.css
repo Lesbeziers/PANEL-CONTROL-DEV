@@ -1255,6 +1255,64 @@ body {
   display: block;
 }
 
+/* ── Indicador de presencia ────────────────────────────────
+   Pequeño badge junto al buscador que muestra cuántas sesiones
+   están editando ahora mismo. Puramente informativo. */
+.presence-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  border: 1px solid transparent;
+  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+  cursor: help;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.presence-indicator__icon {
+  font-size: 14px;
+}
+
+.presence-indicator__count {
+  font-variant-numeric: tabular-nums;
+}
+
+.presence-indicator[data-state="loading"] {
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+  color: #64748b;
+}
+
+.presence-indicator[data-state="offline"] {
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+  color: #94a3b8;
+}
+
+.presence-indicator[data-state="alone"] {
+  background: #e8f5ec;
+  border-color: #b9dbc4;
+  color: #1f6f3b;
+}
+
+.presence-indicator[data-state="paired"] {
+  background: #fff4d4;
+  border-color: #f0d68a;
+  color: #8a5a07;
+}
+
+.presence-indicator[data-state="busy"] {
+  background: #ffe1cf;
+  border-color: #f4a86b;
+  color: #a04a0a;
+}
+
 /* ── Filas atenuadas por búsqueda ─────────────────────────── */
 .left-row,
 .day-row {

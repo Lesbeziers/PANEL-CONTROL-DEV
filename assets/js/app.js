@@ -2239,6 +2239,132 @@ function preserveBlockCollapsedState(targetBlocks, sourceBlocks) {
   });
 }
 
+// =============================================================================
+// PRESENCE INDICATOR
+//
+// Best-effort "is someone else editing right now?" signal. Each browser
+// session publishes a heartbeat key into the Excel's Drive appProperties
+// every PRESENCE_HEARTBEAT_MS milliseconds. The same session also polls the
+// bag every PRESENCE_POLL_MS to count how many *other* sessions have been
+// active in the last PRESENCE_STALE_MS — that count drives a small badge
+// next to the search box.
+//
+// Purely informational: there is no lock and no blocking. Users decide for
+// themselves whether they want to edit while others are present. The merge
+// logic still keeps everyone's changes consistent regardless.
+// =============================================================================
+const PRESENCE_KEY_PREFIX = "presence_";
+const PRESENCE_HEARTBEAT_MS = 20_000;
+const PRESENCE_POLL_MS = 15_000;
+const PRESENCE_STALE_MS = 60_000;
+// Short session id used as the appProperties key. Drive limits each key to
+// ~124 chars and the bag to ~30 entries, so we keep ids compact.
+const PRESENCE_SESSION_ID = `${Math.random().toString(36).slice(2, 8)}${Date.now().toString(36).slice(-4)}`;
+let presenceHeartbeatTimer = null;
+let presencePollTimer = null;
+let presenceStarted = false;
+
+function presenceElement() {
+  return document.getElementById("presence-indicator");
+}
+
+function renderPresenceCount(otherCount, { offline = false, loading = false } = {}) {
+  const el = presenceElement();
+  if (!el) return;
+  if (loading) {
+    el.dataset.state = "loading";
+    el.querySelector(".presence-indicator__count").textContent = "…";
+    el.title = "Comprobando otras sesiones activas…";
+    return;
+  }
+  if (offline) {
+    el.dataset.state = "offline";
+    el.querySelector(".presence-indicator__count").textContent = "?";
+    el.title = "No se ha podido comprobar presencia ahora mismo";
+    return;
+  }
+  const total = otherCount + 1; // include this session
+  el.querySelector(".presence-indicator__count").textContent = String(total);
+  if (otherCount === 0) {
+    el.dataset.state = "alone";
+    el.title = "Solo tú estás editando ahora mismo";
+  } else if (otherCount === 1) {
+    el.dataset.state = "paired";
+    el.title = "Hay otra sesión editando ahora mismo";
+  } else {
+    el.dataset.state = "busy";
+    el.title = `Hay ${otherCount} sesiones más editando ahora mismo`;
+  }
+}
+
+async function presenceHeartbeat() {
+  if (!window.GoogleDrive?.patchAppProperties) return;
+  try {
+    const nowSec = Math.floor(Date.now() / 1000);
+    await window.GoogleDrive.patchAppProperties({
+      [`${PRESENCE_KEY_PREFIX}${PRESENCE_SESSION_ID}`]: String(nowSec),
+    });
+  } catch (err) {
+    console.warn("[presence] heartbeat failed:", err);
+  }
+}
+
+async function presencePoll() {
+  if (!window.GoogleDrive?.getAppProperties) return;
+  try {
+    const bag = await window.GoogleDrive.getAppProperties();
+    const nowSec = Math.floor(Date.now() / 1000);
+    const staleSec = PRESENCE_STALE_MS / 1000;
+    let otherActive = 0;
+    const staleKeysToEvict = {};
+    Object.keys(bag).forEach((key) => {
+      if (!key.startsWith(PRESENCE_KEY_PREFIX)) return;
+      const sessionId = key.slice(PRESENCE_KEY_PREFIX.length);
+      const lastSeen = Number.parseInt(bag[key], 10);
+      if (!Number.isInteger(lastSeen)) return;
+      const ageSec = nowSec - lastSeen;
+      if (ageSec > staleSec) {
+        // Opportunistically evict stale entries so the bag does not grow
+        // unbounded over months of crashed tabs.
+        staleKeysToEvict[key] = null;
+        return;
+      }
+      if (sessionId !== PRESENCE_SESSION_ID) {
+        otherActive += 1;
+      }
+    });
+    renderPresenceCount(otherActive);
+    if (Object.keys(staleKeysToEvict).length) {
+      // Fire-and-forget; if it fails, next poll will try again.
+      window.GoogleDrive.patchAppProperties(staleKeysToEvict).catch(() => {});
+    }
+  } catch (err) {
+    console.warn("[presence] poll failed:", err);
+    renderPresenceCount(0, { offline: true });
+  }
+}
+
+function startPresenceTracking() {
+  if (presenceStarted || IS_VIEWER_MODE) return;
+  if (!window.GoogleDrive?.patchAppProperties) return;
+  presenceStarted = true;
+  renderPresenceCount(0, { loading: true });
+  // Initial heartbeat + poll right away so the user sees feedback fast.
+  presenceHeartbeat().then(presencePoll);
+  presenceHeartbeatTimer = setInterval(presenceHeartbeat, PRESENCE_HEARTBEAT_MS);
+  presencePollTimer = setInterval(presencePoll, PRESENCE_POLL_MS);
+  // Best-effort cleanup of our own entry when the tab closes. Drive may
+  // ignore the request if the browser is mid-teardown, in which case the
+  // entry will simply go stale on its own within PRESENCE_STALE_MS.
+  window.addEventListener("beforeunload", () => {
+    try {
+      window.GoogleDrive.patchAppProperties({
+        [`${PRESENCE_KEY_PREFIX}${PRESENCE_SESSION_ID}`]: null,
+      });
+    } catch (_) { /* ignore */ }
+  });
+}
+
 async function saveToGoogleDrive() {
   if (!window.GoogleDrive) {
     showGridToast("Servicio no disponible");
@@ -5210,6 +5336,12 @@ function renderMonthBlockGrid(root) {
             <input type="text" class="search-box-input" placeholder="Buscar título..." autocomplete="off" aria-label="Buscar en el panel" />
             <button type="button" class="search-box-clear" aria-label="Limpiar búsqueda">✕</button>
           </div>
+          ${IS_VIEWER_MODE ? `` : `
+          <div class="presence-indicator" id="presence-indicator" data-state="loading" role="status" aria-live="polite" title="Comprobando otras sesiones activas…">
+            <span class="presence-indicator__icon" aria-hidden="true">👥</span>
+            <span class="presence-indicator__count">…</span>
+          </div>
+          `}
         </div>
       </div>
 
@@ -5644,6 +5776,9 @@ async function autoLoadFromDrive() {
     // Snapshot the freshly loaded state — this is the baseline against which
     // local edits will be diffed on the next save (merge-on-save).
     loadedSnapshot = deepCloneBlocks(blocks);
+    // Start broadcasting our heartbeat and polling for other sessions now
+    // that Drive is reachable and authenticated.
+    startPresenceTracking();
     // La versión de Drive es ahora el estado de referencia; cualquier borrador
     // local representa trabajo posterior sin sincronizar → ofrecer recuperarlo.
     maybeOfferDraftRecovery();

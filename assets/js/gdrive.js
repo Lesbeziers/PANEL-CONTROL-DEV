@@ -101,6 +101,8 @@
     hideGate,
     loadXlsxBuffer,
     saveXlsxBuffer,
+    getAppProperties,
+    patchAppProperties,
   };
 
   function init() {
@@ -329,6 +331,44 @@
       },
       body: buffer,
     });
+  }
+
+  // Fetch the file's appProperties bag (private metadata visible only to this
+  // OAuth client). Used for the presence indicator — each browser session
+  // writes its heartbeat there and reads everyone else's.
+  async function getAppProperties() {
+    const token = await ensureToken();
+    const url = `https://www.googleapis.com/drive/v3/files/${FILE_ID}?fields=appProperties`;
+    const resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      credentials: "omit",
+    });
+    if (!resp.ok) {
+      throw new Error(`Drive appProperties GET failed: HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    return data.appProperties || {};
+  }
+
+  // Patch the file's appProperties. Drive merges the supplied keys with the
+  // existing bag; setting a key value to null removes it. We use this to
+  // publish our heartbeat and to evict our own entry on tab close.
+  async function patchAppProperties(updates) {
+    const token = await ensureToken();
+    const url = `https://www.googleapis.com/drive/v3/files/${FILE_ID}?fields=appProperties`;
+    const resp = await fetch(url, {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ appProperties: updates }),
+      credentials: "omit",
+    });
+    if (!resp.ok) {
+      throw new Error(`Drive appProperties PATCH failed: HTTP ${resp.status}`);
+    }
+    return await resp.json();
   }
 
   let gateInjected = false;
