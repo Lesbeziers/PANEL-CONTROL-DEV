@@ -1272,7 +1272,7 @@ body {
   color: #ffffff;
   background: #c5cdd6;
   transition: background-color 0.18s ease;
-  cursor: help;
+  cursor: default;
   user-select: none;
   flex-shrink: 0;
 }
