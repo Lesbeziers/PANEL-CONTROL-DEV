@@ -2257,18 +2257,128 @@ const PRESENCE_KEY_PREFIX = "presence_";
 const PRESENCE_HEARTBEAT_MS = 20_000;
 const PRESENCE_POLL_MS = 15_000;
 const PRESENCE_STALE_MS = 60_000;
+const EDITOR_NAME_STORAGE_KEY = `panelControlEditorName:${window.PANEL_CONFIG?.GOOGLE_DRIVE_FILE_ID || "default"}`;
+const EDITOR_NAME_MAX_LENGTH = 24;
 // Short session id used as the appProperties key. Drive limits each key to
 // ~124 chars and the bag to ~30 entries, so we keep ids compact.
 const PRESENCE_SESSION_ID = `${Math.random().toString(36).slice(2, 8)}${Date.now().toString(36).slice(-4)}`;
 let presenceHeartbeatTimer = null;
 let presencePollTimer = null;
 let presenceStarted = false;
+let editorName = "";
 
 function presenceElement() {
   return document.getElementById("presence-indicator");
 }
 
-function renderPresenceCount(otherCount, { offline = false, loading = false } = {}) {
+function readStoredEditorName() {
+  if (!hasLocalStorage()) return "";
+  try {
+    const raw = window.localStorage.getItem(EDITOR_NAME_STORAGE_KEY);
+    return `${raw ?? ""}`.trim().slice(0, EDITOR_NAME_MAX_LENGTH);
+  } catch (_) {
+    return "";
+  }
+}
+
+function persistEditorName(name) {
+  if (!hasLocalStorage()) return;
+  try {
+    window.localStorage.setItem(EDITOR_NAME_STORAGE_KEY, name);
+  } catch (_) { /* ignore */ }
+}
+
+// Sanitise a free-text alias for both storage and Drive transport. Strips the
+// reserved separator we use to encode (epoch|name) inside one appProperties
+// value, collapses whitespace, hard-limits length.
+function sanitiseEditorName(raw) {
+  return `${raw ?? ""}`
+    .replace(/\|/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, EDITOR_NAME_MAX_LENGTH);
+}
+
+// Inject the (one-off) modal asking the user for a display name. Returns a
+// Promise that resolves with the chosen sanitised string. Cannot be dismissed
+// without typing something — we need *some* identifier, even if cheeky.
+function promptForEditorName({ initialValue = "", reason = "primera" } = {}) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "editor-name-overlay";
+    overlay.innerHTML = `
+      <div class="editor-name-card" role="dialog" aria-modal="true" aria-labelledby="editor-name-title">
+        <h2 id="editor-name-title">${reason === "primera" ? "¿Cómo te llamas?" : "Cambiar tu nombre"}</h2>
+        <p>Tu nombre aparecerá al pasar el ratón sobre el indicador de presencia, para que los demás editores sepan quién está dentro. Puede ser tu nombre, un alias o lo que quieras.</p>
+        <input type="text" class="editor-name-input" maxlength="${EDITOR_NAME_MAX_LENGTH}" placeholder="Tu nombre o alias…" autocomplete="off" />
+        <div class="editor-name-actions">
+          <button type="button" class="editor-name-submit" disabled>Continuar</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const input = overlay.querySelector(".editor-name-input");
+    const submit = overlay.querySelector(".editor-name-submit");
+
+    input.value = initialValue;
+    submit.disabled = !sanitiseEditorName(input.value);
+
+    input.addEventListener("input", () => {
+      submit.disabled = !sanitiseEditorName(input.value);
+    });
+
+    const finish = () => {
+      const clean = sanitiseEditorName(input.value);
+      if (!clean) return;
+      overlay.remove();
+      resolve(clean);
+    };
+
+    submit.addEventListener("click", finish);
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        finish();
+      }
+    });
+
+    // Focus the input after the modal has rendered.
+    setTimeout(() => input.focus(), 30);
+  });
+}
+
+async function ensureEditorName({ force = false } = {}) {
+  if (!force) {
+    const stored = readStoredEditorName();
+    if (stored) {
+      editorName = stored;
+      return editorName;
+    }
+  }
+  const fresh = await promptForEditorName({
+    initialValue: force ? editorName : "",
+    reason: force ? "cambiar" : "primera",
+  });
+  editorName = fresh;
+  persistEditorName(editorName);
+  return editorName;
+}
+
+function formatPresenceTooltip(otherNames) {
+  const meLabel = editorName ? `tú (${editorName})` : "tú";
+  if (!otherNames.length) {
+    return `Solo ${meLabel} estás editando ahora mismo. Doble click para cambiar tu nombre.`;
+  }
+  const named = otherNames.filter(Boolean);
+  const anonCount = otherNames.length - named.length;
+  const parts = [meLabel, ...named];
+  if (anonCount === 1) parts.push("1 sesión sin nombre");
+  if (anonCount > 1) parts.push(`${anonCount} sesiones sin nombre`);
+  return `Editando ahora: ${parts.join(", ")}. Doble click para cambiar tu nombre.`;
+}
+
+function renderPresenceState({ otherNames = [], offline = false, loading = false } = {}) {
   const el = presenceElement();
   if (!el) return;
   if (loading) {
@@ -2283,18 +2393,37 @@ function renderPresenceCount(otherCount, { offline = false, loading = false } = 
     el.title = "No se ha podido comprobar presencia ahora mismo";
     return;
   }
-  const total = otherCount + 1; // include this session
+  const otherCount = otherNames.length;
+  const total = otherCount + 1;
   el.querySelector(".presence-indicator__count").textContent = String(total);
   if (otherCount === 0) {
     el.dataset.state = "alone";
-    el.title = "Solo tú estás editando ahora mismo";
   } else if (otherCount === 1) {
     el.dataset.state = "paired";
-    el.title = "Hay otra sesión editando ahora mismo";
   } else {
     el.dataset.state = "busy";
-    el.title = `Hay ${otherCount} sesiones más editando ahora mismo`;
   }
+  el.title = formatPresenceTooltip(otherNames);
+}
+
+// Encode the heartbeat value as `${epoch}|${name}`. Old-format payloads (epoch
+// only, no separator) are still recognised on read so a rolling deploy doesn't
+// break the count.
+function encodePresenceValue(nowSec, name) {
+  const cleanName = sanitiseEditorName(name);
+  return cleanName ? `${nowSec}|${cleanName}` : `${nowSec}`;
+}
+
+function decodePresenceValue(raw) {
+  const text = `${raw ?? ""}`;
+  const sepIdx = text.indexOf("|");
+  if (sepIdx < 0) {
+    const epoch = Number.parseInt(text, 10);
+    return { epoch: Number.isInteger(epoch) ? epoch : null, name: "" };
+  }
+  const epoch = Number.parseInt(text.slice(0, sepIdx), 10);
+  const name = text.slice(sepIdx + 1).trim();
+  return { epoch: Number.isInteger(epoch) ? epoch : null, name };
 }
 
 async function presenceHeartbeat() {
@@ -2302,7 +2431,7 @@ async function presenceHeartbeat() {
   try {
     const nowSec = Math.floor(Date.now() / 1000);
     await window.GoogleDrive.patchAppProperties({
-      [`${PRESENCE_KEY_PREFIX}${PRESENCE_SESSION_ID}`]: String(nowSec),
+      [`${PRESENCE_KEY_PREFIX}${PRESENCE_SESSION_ID}`]: encodePresenceValue(nowSec, editorName),
     });
   } catch (err) {
     console.warn("[presence] heartbeat failed:", err);
@@ -2315,14 +2444,14 @@ async function presencePoll() {
     const bag = await window.GoogleDrive.getAppProperties();
     const nowSec = Math.floor(Date.now() / 1000);
     const staleSec = PRESENCE_STALE_MS / 1000;
-    let otherActive = 0;
+    const otherNames = [];
     const staleKeysToEvict = {};
     Object.keys(bag).forEach((key) => {
       if (!key.startsWith(PRESENCE_KEY_PREFIX)) return;
       const sessionId = key.slice(PRESENCE_KEY_PREFIX.length);
-      const lastSeen = Number.parseInt(bag[key], 10);
-      if (!Number.isInteger(lastSeen)) return;
-      const ageSec = nowSec - lastSeen;
+      const { epoch, name } = decodePresenceValue(bag[key]);
+      if (epoch === null) return;
+      const ageSec = nowSec - epoch;
       if (ageSec > staleSec) {
         // Opportunistically evict stale entries so the bag does not grow
         // unbounded over months of crashed tabs.
@@ -2330,29 +2459,42 @@ async function presencePoll() {
         return;
       }
       if (sessionId !== PRESENCE_SESSION_ID) {
-        otherActive += 1;
+        otherNames.push(name || "");
       }
     });
-    renderPresenceCount(otherActive);
+    renderPresenceState({ otherNames });
     if (Object.keys(staleKeysToEvict).length) {
       // Fire-and-forget; if it fails, next poll will try again.
       window.GoogleDrive.patchAppProperties(staleKeysToEvict).catch(() => {});
     }
   } catch (err) {
     console.warn("[presence] poll failed:", err);
-    renderPresenceCount(0, { offline: true });
+    renderPresenceState({ offline: true });
   }
 }
 
-function startPresenceTracking() {
+async function startPresenceTracking() {
   if (presenceStarted || IS_VIEWER_MODE) return;
   if (!window.GoogleDrive?.patchAppProperties) return;
   presenceStarted = true;
-  renderPresenceCount(0, { loading: true });
+  renderPresenceState({ loading: true });
+  // Make sure we have an identity before the first heartbeat, so other
+  // sessions immediately see the name rather than a fleeting anonymous tick.
+  await ensureEditorName();
   // Initial heartbeat + poll right away so the user sees feedback fast.
   presenceHeartbeat().then(presencePoll);
   presenceHeartbeatTimer = setInterval(presenceHeartbeat, PRESENCE_HEARTBEAT_MS);
   presencePollTimer = setInterval(presencePoll, PRESENCE_POLL_MS);
+  // Double-click on the badge reopens the name prompt — single click stays
+  // inert because the badge is informative, not actionable.
+  const el = presenceElement();
+  if (el) {
+    el.addEventListener("dblclick", async () => {
+      await ensureEditorName({ force: true });
+      // Push the new name to Drive right away and refresh the local tooltip.
+      presenceHeartbeat().then(presencePoll);
+    });
+  }
   // Best-effort cleanup of our own entry when the tab closes. Drive may
   // ignore the request if the browser is mid-teardown, in which case the
   // entry will simply go stale on its own within PRESENCE_STALE_MS.

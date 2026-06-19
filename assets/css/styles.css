@@ -1301,6 +1301,90 @@ body {
   background: #e8442b;
 }
 
+/* ── Modal "¿Cómo te llamas?" ──────────────────────────────
+   Modal de primer login (o cambio voluntario) para que cada
+   sesión publique un alias visible al pasar el ratón por el
+   indicador de presencia. Sin botón de cerrar — el usuario
+   debe escribir algo (aunque sea cualquier cosa). */
+.editor-name-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 18, 28, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  font-family: inherit;
+}
+
+.editor-name-card {
+  background: #ffffff;
+  padding: 28px 32px 24px;
+  border-radius: 14px;
+  box-shadow: 0 14px 50px rgba(0, 0, 0, 0.4);
+  width: min(440px, calc(100% - 32px));
+}
+
+.editor-name-card h2 {
+  margin: 0 0 10px;
+  font-size: 22px;
+  color: #1f2937;
+  font-weight: 800;
+}
+
+.editor-name-card p {
+  margin: 0 0 18px;
+  color: #4b5563;
+  line-height: 1.5;
+  font-size: 14px;
+}
+
+.editor-name-input {
+  width: 100%;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 11px 14px;
+  font-size: 15px;
+  font-family: inherit;
+  color: #111827;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  box-sizing: border-box;
+}
+
+.editor-name-input:focus {
+  border-color: #1a73e8;
+  box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.18);
+}
+
+.editor-name-actions {
+  margin-top: 18px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.editor-name-submit {
+  background: #1a73e8;
+  color: #ffffff;
+  border: 0;
+  padding: 10px 22px;
+  border-radius: 8px;
+  font-size: 14.5px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.editor-name-submit:hover:not(:disabled) {
+  background: #1557b0;
+}
+
+.editor-name-submit:disabled {
+  background: #cbd5e1;
+  cursor: not-allowed;
+}
+
 /* ── Filas atenuadas por búsqueda ─────────────────────────── */
 .left-row,
 .day-row {
