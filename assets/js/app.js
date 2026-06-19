@@ -2366,16 +2366,20 @@ async function ensureEditorName({ force = false } = {}) {
 }
 
 function formatPresenceTooltip(otherNames) {
-  const meLabel = editorName ? `tú (${editorName})` : "tú";
-  if (!otherNames.length) {
-    return `Solo ${meLabel} estás editando ahora mismo. Doble click para cambiar tu nombre.`;
-  }
+  const meLabel = editorName || "Tú";
   const named = otherNames.filter(Boolean);
   const anonCount = otherNames.length - named.length;
   const parts = [meLabel, ...named];
-  if (anonCount === 1) parts.push("1 sesión sin nombre");
-  if (anonCount > 1) parts.push(`${anonCount} sesiones sin nombre`);
-  return `Editando ahora: ${parts.join(", ")}. Doble click para cambiar tu nombre.`;
+  if (anonCount === 1) parts.push("(1 sin nombre)");
+  if (anonCount > 1) parts.push(`(${anonCount} sin nombre)`);
+  return parts.join(", ");
+}
+
+function setPresenceTooltipText(text) {
+  const el = presenceElement();
+  if (!el) return;
+  const slot = el.querySelector(".presence-indicator__tooltip");
+  if (slot) slot.textContent = text;
 }
 
 function renderPresenceState({ otherNames = [], offline = false, loading = false } = {}) {
@@ -2384,13 +2388,13 @@ function renderPresenceState({ otherNames = [], offline = false, loading = false
   if (loading) {
     el.dataset.state = "loading";
     el.querySelector(".presence-indicator__count").textContent = "…";
-    el.title = "Comprobando otras sesiones activas…";
+    setPresenceTooltipText("Comprobando…");
     return;
   }
   if (offline) {
     el.dataset.state = "offline";
     el.querySelector(".presence-indicator__count").textContent = "?";
-    el.title = "No se ha podido comprobar presencia ahora mismo";
+    setPresenceTooltipText("Sin conexión");
     return;
   }
   const otherCount = otherNames.length;
@@ -2403,7 +2407,7 @@ function renderPresenceState({ otherNames = [], offline = false, loading = false
   } else {
     el.dataset.state = "busy";
   }
-  el.title = formatPresenceTooltip(otherNames);
+  setPresenceTooltipText(formatPresenceTooltip(otherNames));
 }
 
 // Encode the heartbeat value as `${epoch}|${name}`. Old-format payloads (epoch
@@ -5479,8 +5483,9 @@ function renderMonthBlockGrid(root) {
             <button type="button" class="search-box-clear" aria-label="Limpiar búsqueda">✕</button>
           </div>
           ${IS_VIEWER_MODE ? `` : `
-          <div class="presence-indicator" id="presence-indicator" data-state="loading" role="status" aria-live="polite" title="Comprobando otras sesiones activas…">
+          <div class="presence-indicator" id="presence-indicator" data-state="loading" role="status" aria-live="polite">
             <span class="presence-indicator__count">…</span>
+            <span class="presence-indicator__tooltip" aria-hidden="true"></span>
           </div>
           `}
         </div>

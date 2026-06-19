@@ -1259,6 +1259,7 @@ body {
    Pequeño badge junto al buscador que muestra cuántas sesiones
    están editando ahora mismo. Puramente informativo. */
 .presence-indicator {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1275,6 +1276,48 @@ body {
   cursor: default;
   user-select: none;
   flex-shrink: 0;
+}
+
+/* Custom tooltip — opens leftwards (toward the panel) so it never
+   spills off the right edge on narrow screens. Shows after a brief
+   150 ms delay; native title attribute removed to avoid the much
+   slower OS-level tooltip from also firing. */
+.presence-indicator__tooltip {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 8px);
+  transform: translateY(-50%);
+  background: rgba(17, 17, 17, 0.94);
+  color: #ffffff;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease 0.15s;
+  z-index: 200;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+}
+
+.presence-indicator__tooltip::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  transform: translateY(-50%);
+  border: 5px solid transparent;
+  border-left-color: rgba(17, 17, 17, 0.94);
+}
+
+.presence-indicator:hover .presence-indicator__tooltip,
+.presence-indicator:focus-within .presence-indicator__tooltip {
+  opacity: 1;
 }
 
 .presence-indicator__count {
