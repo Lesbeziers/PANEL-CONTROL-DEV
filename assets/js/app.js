@@ -2255,8 +2255,16 @@ function preserveBlockCollapsedState(targetBlocks, sourceBlocks) {
 // =============================================================================
 const PRESENCE_KEY_PREFIX = "presence_";
 const PRESENCE_HEARTBEAT_MS = 20_000;
-const PRESENCE_POLL_MS = 15_000;
+const PRESENCE_POLL_MS = 3_000;
+// While saving we beat much faster so the saving flag never goes stale before
+// the upload finishes — drive uploads can briefly exceed the normal heartbeat
+// interval and we don't want other sessions to evict our flag mid-save.
+const PRESENCE_SAVE_HEARTBEAT_MS = 4_000;
 const PRESENCE_STALE_MS = 60_000;
+// A saving flag is considered current if its epoch is within this window.
+// Slightly more lenient than presence staleness because saves take a few
+// seconds and we want the lock to hold for the full operation.
+const PRESENCE_SAVING_FLAG_MAX_AGE_S = 25;
 const EDITOR_NAME_STORAGE_KEY = `panelControlEditorName:${window.PANEL_CONFIG?.GOOGLE_DRIVE_FILE_ID || "default"}`;
 const EDITOR_NAME_MAX_LENGTH = 24;
 // Short session id used as the appProperties key. Drive limits each key to
@@ -2264,8 +2272,13 @@ const EDITOR_NAME_MAX_LENGTH = 24;
 const PRESENCE_SESSION_ID = `${Math.random().toString(36).slice(2, 8)}${Date.now().toString(36).slice(-4)}`;
 let presenceHeartbeatTimer = null;
 let presencePollTimer = null;
+let presenceSaveHeartbeatTimer = null;
 let presenceStarted = false;
 let editorName = "";
+// Flags driving the "someone is saving" UI lock. Toggled by saveToGoogleDrive
+// (own save) and by presencePoll (someone else's save detected via Drive).
+let selfIsSaving = false;
+let otherIsSaving = false;
 
 function presenceElement() {
   return document.getElementById("presence-indicator");
@@ -2365,14 +2378,28 @@ async function ensureEditorName({ force = false } = {}) {
   return editorName;
 }
 
-function formatPresenceTooltip(otherNames) {
+function formatPresenceTooltip(otherNames, savingNames = []) {
   const meLabel = editorName || "Tú";
   const named = otherNames.filter(Boolean);
   const anonCount = otherNames.length - named.length;
   const parts = [meLabel, ...named];
   if (anonCount === 1) parts.push("(1 sin nombre)");
   if (anonCount > 1) parts.push(`(${anonCount} sin nombre)`);
-  return parts.join(", ");
+  const base = parts.join(", ");
+  if (selfIsSaving) {
+    return `${base} · guardando…`;
+  }
+  if (savingNames && savingNames.length) {
+    const who = savingNames.filter(Boolean);
+    if (who.length === 1) {
+      return `${base} · ${who[0]} está guardando…`;
+    }
+    if (who.length > 1) {
+      return `${base} · ${who.join(", ")} están guardando…`;
+    }
+    return `${base} · otra sesión está guardando…`;
+  }
+  return base;
 }
 
 function setPresenceTooltipText(text) {
@@ -2382,7 +2409,7 @@ function setPresenceTooltipText(text) {
   if (slot) slot.textContent = text;
 }
 
-function renderPresenceState({ otherNames = [], offline = false, loading = false } = {}) {
+function renderPresenceState({ otherNames = [], savingNames = [], offline = false, loading = false } = {}) {
   const el = presenceElement();
   if (!el) return;
   if (loading) {
@@ -2407,27 +2434,57 @@ function renderPresenceState({ otherNames = [], offline = false, loading = false
   } else {
     el.dataset.state = "busy";
   }
-  setPresenceTooltipText(formatPresenceTooltip(otherNames));
+  setPresenceTooltipText(formatPresenceTooltip(otherNames, savingNames));
 }
 
-// Encode the heartbeat value as `${epoch}|${name}`. Old-format payloads (epoch
-// only, no separator) are still recognised on read so a rolling deploy doesn't
-// break the count.
-function encodePresenceValue(nowSec, name) {
+// Toggle the global "someone is saving" UI lock: disables the Save button and
+// pulses the presence badge whenever any session (this one or another) has
+// the saving flag set. Safe to call repeatedly; it's idempotent.
+function updateSavingUIState() {
+  const someoneSaving = selfIsSaving || otherIsSaving;
+  const btn = document.getElementById("save-drive-btn");
+  if (btn) {
+    if (someoneSaving) {
+      btn.disabled = true;
+      btn.dataset.savingLock = "1";
+      btn.textContent = "Guardando…";
+    } else if (btn.dataset.savingLock === "1") {
+      // Only restore from our own lock — don't fight whatever the caller had
+      // already done (e.g. a manual save in flight already toggled disabled).
+      btn.disabled = false;
+      delete btn.dataset.savingLock;
+      btn.textContent = "GUARDAR";
+    }
+  }
+  const badge = presenceElement();
+  if (badge) {
+    badge.classList.toggle("is-saving", someoneSaving);
+  }
+}
+
+// Encode the heartbeat value as `${epoch}|${name}` (idle) or
+// `${epoch}|${name}|saving` (during a Drive upload). Old-format payloads
+// (epoch only, no separator) are still recognised on read so a rolling deploy
+// doesn't break the count.
+function encodePresenceValue(nowSec, name, isSaving = false) {
   const cleanName = sanitiseEditorName(name);
+  if (isSaving) {
+    return cleanName ? `${nowSec}|${cleanName}|saving` : `${nowSec}||saving`;
+  }
   return cleanName ? `${nowSec}|${cleanName}` : `${nowSec}`;
 }
 
 function decodePresenceValue(raw) {
   const text = `${raw ?? ""}`;
-  const sepIdx = text.indexOf("|");
-  if (sepIdx < 0) {
-    const epoch = Number.parseInt(text, 10);
-    return { epoch: Number.isInteger(epoch) ? epoch : null, name: "" };
-  }
-  const epoch = Number.parseInt(text.slice(0, sepIdx), 10);
-  const name = text.slice(sepIdx + 1).trim();
-  return { epoch: Number.isInteger(epoch) ? epoch : null, name };
+  const parts = text.split("|");
+  const epoch = Number.parseInt(parts[0], 10);
+  const name = (parts[1] || "").trim();
+  const isSaving = parts[2] === "saving";
+  return {
+    epoch: Number.isInteger(epoch) ? epoch : null,
+    name,
+    isSaving,
+  };
 }
 
 async function presenceHeartbeat() {
@@ -2435,7 +2492,7 @@ async function presenceHeartbeat() {
   try {
     const nowSec = Math.floor(Date.now() / 1000);
     await window.GoogleDrive.patchAppProperties({
-      [`${PRESENCE_KEY_PREFIX}${PRESENCE_SESSION_ID}`]: encodePresenceValue(nowSec, editorName),
+      [`${PRESENCE_KEY_PREFIX}${PRESENCE_SESSION_ID}`]: encodePresenceValue(nowSec, editorName, selfIsSaving),
     });
   } catch (err) {
     console.warn("[presence] heartbeat failed:", err);
@@ -2449,11 +2506,13 @@ async function presencePoll() {
     const nowSec = Math.floor(Date.now() / 1000);
     const staleSec = PRESENCE_STALE_MS / 1000;
     const otherNames = [];
+    const savingNames = [];
     const staleKeysToEvict = {};
+    let anyOtherSaving = false;
     Object.keys(bag).forEach((key) => {
       if (!key.startsWith(PRESENCE_KEY_PREFIX)) return;
       const sessionId = key.slice(PRESENCE_KEY_PREFIX.length);
-      const { epoch, name } = decodePresenceValue(bag[key]);
+      const { epoch, name, isSaving } = decodePresenceValue(bag[key]);
       if (epoch === null) return;
       const ageSec = nowSec - epoch;
       if (ageSec > staleSec) {
@@ -2464,9 +2523,17 @@ async function presencePoll() {
       }
       if (sessionId !== PRESENCE_SESSION_ID) {
         otherNames.push(name || "");
+        if (isSaving && ageSec <= PRESENCE_SAVING_FLAG_MAX_AGE_S) {
+          anyOtherSaving = true;
+          savingNames.push(name || "");
+        }
       }
     });
-    renderPresenceState({ otherNames });
+    renderPresenceState({ otherNames, savingNames });
+    if (anyOtherSaving !== otherIsSaving) {
+      otherIsSaving = anyOtherSaving;
+      updateSavingUIState();
+    }
     if (Object.keys(staleKeysToEvict).length) {
       // Fire-and-forget; if it fails, next poll will try again.
       window.GoogleDrive.patchAppProperties(staleKeysToEvict).catch(() => {});
@@ -2516,6 +2583,57 @@ async function saveToGoogleDrive() {
     showGridToast("Servicio no disponible");
     return;
   }
+  if (selfIsSaving) {
+    // Defensive: button is disabled while we save, but pre-empt anything that
+    // managed to slip through anyway.
+    return;
+  }
+
+  // Pre-check: read the presence bag once before doing anything so we can
+  // refuse the save if somebody else has just started theirs. This catches
+  // the race that periodic polling alone cannot cover (their flag may have
+  // been written between two of our polls).
+  if (window.GoogleDrive.getAppProperties) {
+    try {
+      const bag = await window.GoogleDrive.getAppProperties();
+      const nowSec = Math.floor(Date.now() / 1000);
+      let conflictName = "";
+      for (const key of Object.keys(bag)) {
+        if (!key.startsWith(PRESENCE_KEY_PREFIX)) continue;
+        const sessionId = key.slice(PRESENCE_KEY_PREFIX.length);
+        if (sessionId === PRESENCE_SESSION_ID) continue;
+        const { epoch, name, isSaving } = decodePresenceValue(bag[key]);
+        if (!isSaving || epoch === null) continue;
+        if (nowSec - epoch > PRESENCE_SAVING_FLAG_MAX_AGE_S) continue;
+        conflictName = name || "Otra sesión";
+        break;
+      }
+      if (conflictName) {
+        showGridToast(`${conflictName} está guardando ahora mismo · espera unos segundos y reintenta`);
+        // Reflect the conflict in the UI immediately even before the next poll
+        // (which would have caught it on its own within PRESENCE_POLL_MS).
+        if (!otherIsSaving) {
+          otherIsSaving = true;
+          updateSavingUIState();
+        }
+        return;
+      }
+    } catch (err) {
+      // Non-fatal: proceed without the pre-check. The merge logic still keeps
+      // us safe from data loss.
+      console.warn("[save] pre-check failed, proceeding:", err);
+    }
+  }
+
+  selfIsSaving = true;
+  updateSavingUIState();
+  // Push our saving flag immediately so other sessions see it on their next
+  // poll (≤ PRESENCE_POLL_MS ahead) or pre-check.
+  await presenceHeartbeat();
+  // Boost heartbeat cadence so the flag never goes stale during long saves.
+  if (presenceSaveHeartbeatTimer) clearInterval(presenceSaveHeartbeatTimer);
+  presenceSaveHeartbeatTimer = setInterval(presenceHeartbeat, PRESENCE_SAVE_HEARTBEAT_MS);
+
   showGridToast("Guardando...");
   try {
     // Fast-path: never loaded from Drive in this session → no merge possible,
@@ -2549,6 +2667,19 @@ async function saveToGoogleDrive() {
   } catch (err) {
     console.error("saveToGoogleDrive error:", err);
     showGridToast("Error al guardar · tus cambios siguen a salvo en este equipo");
+  } finally {
+    // Always release the lock: clear the flag locally, kill the boosted
+    // heartbeat timer, and push one final heartbeat so other sessions stop
+    // showing the "guardando" overlay within their next poll.
+    if (presenceSaveHeartbeatTimer) {
+      clearInterval(presenceSaveHeartbeatTimer);
+      presenceSaveHeartbeatTimer = null;
+    }
+    selfIsSaving = false;
+    updateSavingUIState();
+    // Fire-and-forget; if the network is gone the entry will become stale and
+    // eventually be ignored by other sessions on its own.
+    presenceHeartbeat().catch(() => {});
   }
 }
 
@@ -2701,14 +2832,10 @@ function attachExcelExportControls(root) {
 
   const saveDriveBtn = root.querySelector("#save-drive-btn");
   if (saveDriveBtn) {
-    saveDriveBtn.addEventListener("click", async () => {
-      saveDriveBtn.disabled = true;
-      try {
-        await saveToGoogleDrive();
-      } finally {
-        saveDriveBtn.disabled = false;
-      }
-    });
+    // The button's disabled state is fully driven by updateSavingUIState now,
+    // which mirrors the (self / other) saving flags in real time. No manual
+    // disable/enable here — that would race with the global state.
+    saveDriveBtn.addEventListener("click", () => { saveToGoogleDrive(); });
   }
 }
 
