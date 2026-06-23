@@ -3977,6 +3977,65 @@ function handleGridClickCapture(event) {
   }
 }
 
+// =============================================================================
+// Delegated cell event handlers
+//
+// Per-cell click / dblclick / focus listeners used to be attached inside each
+// attach*Cell function. With ~50 rows × 5 column types × 3 listeners that was
+// 750+ registrations on every renderRows(). These three functions live at the
+// grid root and dispatch based on dataset.columnKey, eliminating that bloat.
+// =============================================================================
+function findCellFromEvent(event) {
+  const target = event.target;
+  if (!(target instanceof Element)) return null;
+  // Only react to direct children of .left-row (the actual cells); the .day-row
+  // cells live in the gantt, which has its own handlers.
+  const cell = target.closest(".left-row > div[data-column-key]");
+  return cell || null;
+}
+
+function handleGridDelegatedClick(event) {
+  const cell = findCellFromEvent(event);
+  if (!cell) return;
+
+  const wasSelected = selectedCell === cell;
+  const columnKey = cell.dataset.columnKey;
+
+  setSelectedCell(cell);
+
+  if (columnKey === "listo") {
+    // Clicks on the checkbox input itself are handled by its own change event
+    // — don't double-toggle when the user clicked the input.
+    if (event.target.tagName === "INPUT") return;
+    if (typeof cell.toggleListo === "function") {
+      cell.toggleListo();
+    }
+    return;
+  }
+
+  // Genre opens edit mode on a click against an already-selected cell. Mirrors
+  // the previous per-cell behaviour where the second click on the dropdown
+  // expands the menu.
+  if (columnKey === "genre" && wasSelected && typeof cell.openEditMode === "function") {
+    cell.openEditMode({ keepContent: true });
+  }
+}
+
+function handleGridDelegatedDblClick(event) {
+  const cell = findCellFromEvent(event);
+  if (!cell) return;
+  if (typeof cell.openEditMode === "function") {
+    setSelectedCell(cell);
+    cell.openEditMode({ keepContent: true });
+  }
+}
+
+function handleGridDelegatedFocusIn(event) {
+  const cell = findCellFromEvent(event);
+  if (!cell) return;
+  setSelectedCell(cell);
+}
+
 function updateFillPreview(masterMeta, targetRowIndex) {
   clearFillPreview();
   if (targetRowIndex <= masterMeta.rowIndex) {
@@ -4376,6 +4435,17 @@ if (event.shiftKey && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
     return;
   }
 
+  // Space on a listo checkbox cell toggles it. Used to be a per-cell keydown
+  // listener; lives here now because per-cell listeners were a significant
+  // chunk of the listener count we trimmed.
+  if ((event.key === " " || event.key === "Spacebar")
+      && selectedCell.dataset.columnKey === "listo"
+      && typeof selectedCell.toggleListo === "function") {
+    event.preventDefault();
+    selectedCell.toggleListo();
+    return;
+  }
+
     if ((event.ctrlKey || event.metaKey) && (event.key === "Delete" || event.key === "Backspace")) {
     if (IS_VIEWER_MODE) { return; }
     if (isEditingElement(document.activeElement)) {
@@ -4647,14 +4717,7 @@ function attachDateCell(cell, row, columnKey) {
   };
 
   cell.openEditMode = openEditMode;
-
-  cell.addEventListener("click", () => setSelectedCell(cell));
-  cell.addEventListener("dblclick", () => {
-    setSelectedCell(cell);
-    openEditMode({ keepContent: true });
-  });
-  cell.addEventListener("focus", () => setSelectedCell(cell));
-
+  // click / dblclick / focus handled by delegated grid handlers.
   render();
 }
 
@@ -4802,15 +4865,8 @@ function attachGenreCell(cell, row) {
   };
 
   cell.openEditMode = openEditMode;
-  cell.addEventListener("click", () => {
-    const wasSelected = selectedCell === cell;
-    setSelectedCell(cell);
-    if (wasSelected) {
-      openEditMode({ keepContent: true });
-    }
-  });
-  cell.addEventListener("focus", () => setSelectedCell(cell));
-
+  // click (which on genre also opens edit if already selected), focus
+  // delegated to grid root handlers — see handleGridDelegatedClick.
   render();
 }
 function insertRow(blockIndex, atIndex) {
@@ -5261,29 +5317,17 @@ function attachListoCheckbox(cell, row) {
     input.checked = getRowListo(row);
   };
 
+  // The checkbox input itself still owns its own change listener — native
+  // form controls need it. Cell-level click / focus / space-key handling is
+  // now delegated at the grid root via handleGridDelegatedClick et al.
   input.addEventListener("change", () => {
     toggleListo(input.checked);
   });
 
-  cell.addEventListener("click", (event) => {
-    setSelectedCell(cell);    
-    if (event.target === input) {
-      return;
-    }
-    toggleListo();
-  });
+  // Exposed so the delegated grid click handler can toggle from clicks that
+  // miss the input itself.
+  cell.toggleListo = toggleListo;
 
-  cell.addEventListener("keydown", (event) => {
-    if (event.key === " " || event.key === "Spacebar") {
-      event.preventDefault();
-      toggleListo();
-    }
-  });
-
-  cell.addEventListener("focus", () => {
-    setSelectedCell(cell);
-  });
-  
   cell.appendChild(input);
 }
 
@@ -5518,20 +5562,7 @@ function attachTitleCell(cell, row) {
   };
 
   cell.openEditMode = openEditMode;
-
-  cell.addEventListener("click", () => {
-    setSelectedCell(cell);
-  });
-
-  cell.addEventListener("dblclick", () => {
-    setSelectedCell(cell);
-    openEditMode({ keepContent: true });
-  });
-
-  cell.addEventListener("focus", () => {
-    setSelectedCell(cell);
-  });
-  
+  // click / dblclick / focus handled by delegated grid handlers.
   renderReadMode();
 }
 
@@ -5597,19 +5628,7 @@ function attachIdTextCell(cell, row) {
 
   cell.openEditMode = openEditMode;
 
-  cell.addEventListener("click", () => {
-    setSelectedCell(cell);
-  });
-
-  cell.addEventListener("dblclick", () => {
-    setSelectedCell(cell);
-    openEditMode({ keepContent: true });
-  });
-
-  cell.addEventListener("focus", () => {
-    setSelectedCell(cell);
-  });
-
+  // click / dblclick / focus handled by delegated grid handlers.
   renderReadMode();
 }
 
@@ -5742,6 +5761,13 @@ function renderMonthBlockGrid(root) {
   document.addEventListener("pointerup", handleGridPointerUp);
   document.addEventListener("pointercancel", handleGridPointerCancel);
   gridRoot?.addEventListener("click", handleGridClickCapture, true);
+  // Delegated cell-level handlers — replaces the per-cell click / dblclick /
+  // focus listeners that used to be attached inside attachTitleCell,
+  // attachDateCell, attachGenreCell, attachIdTextCell, attachListoCheckbox.
+  // Cuts the listener count by ~3-4× the cell count on each renderRows().
+  gridRoot?.addEventListener("click", handleGridDelegatedClick);
+  gridRoot?.addEventListener("dblclick", handleGridDelegatedDblClick);
+  gridRoot?.addEventListener("focusin", handleGridDelegatedFocusIn);
   if (!IS_VIEWER_MODE) { ensureFillHandleElement(); }
   attachExcelExportControls(root);
   attachSearchControls(root);
