@@ -334,14 +334,11 @@
   }
 
   // Fetch the file's appProperties bag (private metadata visible only to this
-  // OAuth client) along with the modifiedTime change marker. Single request,
-  // two pieces of data: presence polling and "another user saved" detection
-  // share the same HTTP round-trip.
-  //
-  // Returns { appProperties: {...}, modifiedTime: "ISO-string"|null }.
+  // OAuth client). Used for the presence indicator — each browser session
+  // writes its heartbeat there and reads everyone else's.
   async function getAppProperties() {
     const token = await ensureToken();
-    const url = `https://www.googleapis.com/drive/v3/files/${FILE_ID}?fields=appProperties,modifiedTime`;
+    const url = `https://www.googleapis.com/drive/v3/files/${FILE_ID}?fields=appProperties`;
     const resp = await fetch(url, {
       headers: { Authorization: `Bearer ${token}` },
       credentials: "omit",
@@ -350,10 +347,7 @@
       throw new Error(`Drive appProperties GET failed: HTTP ${resp.status}`);
     }
     const data = await resp.json();
-    return {
-      appProperties: data.appProperties || {},
-      modifiedTime: data.modifiedTime || null,
-    };
+    return data.appProperties || {};
   }
 
   // Patch the file's appProperties. Drive merges the supplied keys with the

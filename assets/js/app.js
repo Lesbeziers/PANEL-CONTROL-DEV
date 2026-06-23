@@ -2498,83 +2498,6 @@ function updateSavingUIState() {
   }
 }
 
-// =============================================================================
-// REMOTE CHANGE DETECTION
-//
-// We piggy-back on the presence poll to also pull the file's modifiedTime
-// from Drive. When it advances past what we last saw (load or save) and we
-// were not the one who caused it, show a non-blocking banner inviting the
-// user to reload so they can see the new data.
-//
-// This is purely UX sugar — the merge-on-save logic already protects data
-// integrity. The banner just shortens the loop "did someone else save?".
-// =============================================================================
-let lastKnownDriveModifiedTime = null;
-let remoteChangeBannerVisible = false;
-let remoteChangeBannerEl = null;
-
-function showRemoteChangeBanner() {
-  if (remoteChangeBannerVisible) return;
-  remoteChangeBannerVisible = true;
-  if (remoteChangeBannerEl && remoteChangeBannerEl.isConnected) {
-    remoteChangeBannerEl.classList.add("is-visible");
-    return;
-  }
-  const banner = document.createElement("div");
-  banner.className = "remote-change-banner is-visible";
-  banner.setAttribute("role", "status");
-  banner.innerHTML = `
-    <span class="remote-change-banner__text">Hay cambios nuevos en el panel guardados por otra persona.</span>
-    <button type="button" class="remote-change-banner__reload">Recargar</button>
-    <button type="button" class="remote-change-banner__dismiss" aria-label="Cerrar">✕</button>
-  `;
-  banner.querySelector(".remote-change-banner__reload").addEventListener("click", () => {
-    window.location.reload();
-  });
-  banner.querySelector(".remote-change-banner__dismiss").addEventListener("click", () => {
-    hideRemoteChangeBanner();
-  });
-  document.body.appendChild(banner);
-  remoteChangeBannerEl = banner;
-}
-
-function hideRemoteChangeBanner() {
-  remoteChangeBannerVisible = false;
-  if (remoteChangeBannerEl) {
-    remoteChangeBannerEl.classList.remove("is-visible");
-  }
-}
-
-// Called from presencePoll with the latest modifiedTime returned by Drive.
-// We only surface a banner if (a) we have a baseline, (b) the marker has
-// strictly advanced, and (c) we're not the session causing the change.
-function checkRemoteChangeMarker(modifiedTime) {
-  if (!modifiedTime) return;
-  if (selfIsSaving) return; // our own save will update the baseline shortly
-  if (!lastKnownDriveModifiedTime) {
-    lastKnownDriveModifiedTime = modifiedTime;
-    return;
-  }
-  if (modifiedTime > lastKnownDriveModifiedTime) {
-    showRemoteChangeBanner();
-  }
-}
-
-// After our own save / merge, pull the freshest modifiedTime from Drive so the
-// next presence poll doesn't interpret our own write as "another user saved".
-// Fire-and-forget — if it fails the worst case is a single spurious banner
-// that the user can dismiss.
-function refreshRemoteChangeMarker() {
-  if (!window.GoogleDrive?.getAppProperties) return;
-  window.GoogleDrive.getAppProperties()
-    .then(({ modifiedTime }) => {
-      if (modifiedTime) {
-        lastKnownDriveModifiedTime = modifiedTime;
-      }
-    })
-    .catch(() => { /* ignore */ });
-}
-
 // Encode the heartbeat value as `${epoch}|${name}` (idle) or
 // `${epoch}|${name}|saving` (during a Drive upload). Old-format payloads
 // (epoch only, no separator) are still recognised on read so a rolling deploy
@@ -2615,7 +2538,7 @@ async function presenceHeartbeat() {
 async function presencePoll() {
   if (!window.GoogleDrive?.getAppProperties) return;
   try {
-    const { appProperties: bag, modifiedTime } = await window.GoogleDrive.getAppProperties();
+    const bag = await window.GoogleDrive.getAppProperties();
     const nowSec = Math.floor(Date.now() / 1000);
     const staleSec = PRESENCE_STALE_MS / 1000;
     const otherNames = [];
@@ -2651,10 +2574,6 @@ async function presencePoll() {
       // Fire-and-forget; if it fails, next poll will try again.
       window.GoogleDrive.patchAppProperties(staleKeysToEvict).catch(() => {});
     }
-    // Piggy-backed change detection: if Drive's modifiedTime moved past what
-    // we last saw and we weren't the one who caused it, surface a soft banner
-    // inviting the user to reload.
-    checkRemoteChangeMarker(modifiedTime);
   } catch (err) {
     console.warn("[presence] poll failed:", err);
     renderPresenceState({ offline: true });
@@ -2712,7 +2631,7 @@ async function saveToGoogleDrive() {
   // been written between two of our polls).
   if (window.GoogleDrive.getAppProperties) {
     try {
-      const { appProperties: bag } = await window.GoogleDrive.getAppProperties();
+      const bag = await window.GoogleDrive.getAppProperties();
       const nowSec = Math.floor(Date.now() / 1000);
       let conflictName = "";
       for (const key of Object.keys(bag)) {
@@ -2761,9 +2680,6 @@ async function saveToGoogleDrive() {
       await window.GoogleDrive.saveXlsxBuffer(buffer);
       loadedSnapshot = deepCloneBlocks(blocks);
       clearDraft();
-      // Refresh the remote-change marker so our own save doesn't trigger the
-      // "someone else saved" banner on the next poll.
-      refreshRemoteChangeMarker();
       showGridToast(`Guardado · ${sheetCount} hoja(s)`);
       return;
     }
@@ -2783,10 +2699,6 @@ async function saveToGoogleDrive() {
     loadedSnapshot = deepCloneBlocks(blocks);
     clearDraft();
     renderRows();
-    // We just absorbed whatever remote had + applied our diff, so the banner
-    // (if any was visible) is now stale — hide it and reset the marker.
-    hideRemoteChangeBanner();
-    refreshRemoteChangeMarker();
     showGridToast(`Guardado · ${sheetCount} hoja(s)`);
   } catch (err) {
     console.error("saveToGoogleDrive error:", err);
