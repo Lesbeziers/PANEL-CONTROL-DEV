@@ -82,13 +82,30 @@ function writeDraftNow() {
   if (IS_VIEWER_MODE || !hasLocalStorage()) {
     return;
   }
-  try {
-    window.localStorage.setItem(
-      DRAFT_STORAGE_KEY,
-      JSON.stringify({ savedAt: Date.now(), blocks })
-    );
-  } catch (err) {
-    console.error("[draft] no se pudo autoguardar en local:", err);
+  // Skip autosave while the user is mid-edit in a cell — the JSON.stringify
+  // of the full blocks structure can stall the main thread for tens of ms on
+  // older machines, which manifests as input lag. The autosave will re-fire
+  // shortly after editing ends via the next markDirty().
+  if (editingCell) {
+    scheduleDraftAutosave();
+    return;
+  }
+  // Defer the heavy serialise+write off the input-handling stack so any
+  // pending paint/scroll finishes first.
+  const runWrite = () => {
+    try {
+      window.localStorage.setItem(
+        DRAFT_STORAGE_KEY,
+        JSON.stringify({ savedAt: Date.now(), blocks })
+      );
+    } catch (err) {
+      console.error("[draft] no se pudo autoguardar en local:", err);
+    }
+  };
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(runWrite, { timeout: 2000 });
+  } else {
+    setTimeout(runWrite, 0);
   }
 }
 
@@ -1102,7 +1119,8 @@ function duplicateRowsAroundSelection(direction, preferredBlockIndex = null, pre
   });
 }
 
-function refreshDeleteControls() {
+let refreshDeleteControlsScheduled = false;
+function refreshDeleteControlsNow() {
   document.querySelectorAll('.gutter-icon-btn[data-action="delete-rows"]').forEach((button) => {
     const blockIndex = Number.parseInt(button.dataset.blockIndex, 10);
     const enabled = canDeleteRows(Number.isNaN(blockIndex) ? null : blockIndex);
@@ -1112,6 +1130,24 @@ function refreshDeleteControls() {
 
   if (menuElement?.classList.contains("open")) {
     updateContextMenuDeleteState();
+  }
+}
+
+// Coalesced + idle-deferred wrapper. Selection changes call this on every
+// click; running the querySelectorAll + class toggles synchronously was
+// costing a few ms on each click on older machines. Idle scheduling means
+// it runs after the click is visually acknowledged.
+function refreshDeleteControls() {
+  if (refreshDeleteControlsScheduled) return;
+  refreshDeleteControlsScheduled = true;
+  const run = () => {
+    refreshDeleteControlsScheduled = false;
+    refreshDeleteControlsNow();
+  };
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(run, { timeout: 200 });
+  } else {
+    setTimeout(run, 0);
   }
 }
 
@@ -2255,7 +2291,7 @@ function preserveBlockCollapsedState(targetBlocks, sourceBlocks) {
 // =============================================================================
 const PRESENCE_KEY_PREFIX = "presence_";
 const PRESENCE_HEARTBEAT_MS = 20_000;
-const PRESENCE_POLL_MS = 3_000;
+const PRESENCE_POLL_MS = 6_000;
 // While saving we beat much faster so the saving flag never goes stale before
 // the upload finishes — drive uploads can briefly exceed the normal heartbeat
 // interval and we don't want other sessions to evict our flag mid-save.

@@ -1449,6 +1449,12 @@ body {
 .left-row,
 .day-row {
   transition: opacity 0.15s ease;
+  /* Skip layout/paint of rows scrolled out of the viewport. The browser
+     reserves --row-height as a placeholder so the scroll position is
+     stable. Massive paint-cost reduction on i5/old hardware with many
+     rows; ignored on browsers that don't support the property. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--row-height);
 }
 
 .left-row.is-search-dim,
