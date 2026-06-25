@@ -2614,6 +2614,413 @@ async function startPresenceTracking() {
   });
 }
 
+// =============================================================================
+// CHANGE HISTORY ("Últimos cambios")
+//
+// A sidecar JSON file in Drive (PANEL_CONTROL_HISTORIAL.json) accumulates a
+// rolling log of edits. Every successful save derives entries from the local
+// delta and prepends them to the file. A side panel renders the most recent
+// HISTORY_MAX_ENTRIES (=500) entries with a click-to-jump affordance into
+// the grid below.
+//
+// File discovery: id is stored in the Excel's appProperties under key
+// `historyFileId` so every session of the shared account finds it instantly.
+// Cold boot falls back to `findJsonFileByName` and finally creates a new
+// file if none exists.
+// =============================================================================
+const HISTORY_FILE_NAME = "PANEL_CONTROL_HISTORIAL.json";
+const HISTORY_APP_PROP_KEY = "historyFileId";
+const HISTORY_MAX_ENTRIES = 500;
+const HISTORY_FLASH_MS = 2200;
+
+let historyFileId = null;
+let historyEntries = [];
+let historyLoaded = false;
+let historyLoading = false;
+let historyPanelOpen = false;
+
+// Map internal column keys to user-facing labels for the history cards.
+const HISTORY_COLUMN_LABEL = {
+  listo: "Listo",
+  title: "Título",
+  startDate: "Inicio Vig.",
+  endDate: "Fin Vig.",
+  genre: "Género",
+  id: "ID",
+  actualizado: "Actualizado",
+  listoByMonth: "Listo",
+};
+
+function formatHistoryColumn(columnKey) {
+  return HISTORY_COLUMN_LABEL[columnKey] || columnKey;
+}
+
+function formatHistoryRelativeTime(ts) {
+  const then = new Date(ts);
+  if (Number.isNaN(then.getTime())) return "";
+  const diffMs = Date.now() - then.getTime();
+  const diffMin = Math.floor(diffMs / 60_000);
+  if (diffMin < 1) return "ahora mismo";
+  if (diffMin < 60) return `hace ${diffMin} min`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `hace ${diffHr} h`;
+  const now = new Date();
+  const sameDay = then.toDateString() === now.toDateString();
+  if (sameDay) return then.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (then.toDateString() === yesterday.toDateString()) {
+    return `ayer, ${then.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}`;
+  }
+  return then.toLocaleString("es-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+function formatHistoryValue(value) {
+  if (value === null || value === undefined || value === "") return "(vacío)";
+  if (typeof value === "boolean") return value ? "Sí" : "No";
+  if (typeof value === "object") {
+    // listoByMonth maps look like {"YYYY-MM": true, ...}
+    const months = Object.keys(value).filter((k) => value[k]).sort();
+    return months.length ? months.join(", ") : "(vacío)";
+  }
+  return String(value);
+}
+
+// Derive a stable initial-circle colour from an editor name so each user has
+// a consistent looking avatar across sessions.
+function colourForEditorName(name) {
+  const palette = ["#2eb84e", "#f1ae15", "#1a73e8", "#9b59b6", "#e8442b", "#16a085", "#d35400", "#7f8c8d"];
+  if (!name) return palette[palette.length - 1];
+  let h = 0;
+  for (let i = 0; i < name.length; i += 1) h = (h * 31 + name.charCodeAt(i)) | 0;
+  return palette[Math.abs(h) % palette.length];
+}
+
+// Locate the history file once per session. Priority:
+//   1. Excel.appProperties.historyFileId (fast, cross-session)
+//   2. Drive search by HISTORY_FILE_NAME (works on cold migration)
+//   3. Create a fresh file, save the id back into appProperties
+async function ensureHistoryFile() {
+  if (historyFileId) return historyFileId;
+  if (!window.GoogleDrive?.getAppProperties) return null;
+  try {
+    const appProperties = await window.GoogleDrive.getAppProperties();
+    const cachedId = appProperties?.[HISTORY_APP_PROP_KEY];
+    if (cachedId) {
+      historyFileId = cachedId;
+      return historyFileId;
+    }
+  } catch (_) { /* ignore — fall through to discovery */ }
+
+  try {
+    const found = await window.GoogleDrive.findJsonFileByName(HISTORY_FILE_NAME);
+    if (found) {
+      historyFileId = found;
+      await window.GoogleDrive.patchAppProperties({ [HISTORY_APP_PROP_KEY]: found });
+      return historyFileId;
+    }
+  } catch (_) { /* ignore — fall through to creation */ }
+
+  try {
+    const created = await window.GoogleDrive.createJsonFile(HISTORY_FILE_NAME, {
+      version: 1,
+      entries: [],
+    });
+    historyFileId = created;
+    await window.GoogleDrive.patchAppProperties({ [HISTORY_APP_PROP_KEY]: created });
+    return historyFileId;
+  } catch (err) {
+    console.warn("[history] could not create history file:", err);
+    return null;
+  }
+}
+
+async function loadHistory() {
+  if (historyLoading) return;
+  historyLoading = true;
+  try {
+    const fileId = await ensureHistoryFile();
+    if (!fileId) return;
+    const doc = await window.GoogleDrive.readJsonFile(fileId);
+    historyEntries = Array.isArray(doc?.entries) ? doc.entries : [];
+    historyLoaded = true;
+    if (historyPanelOpen) renderHistoryPanelContents();
+  } catch (err) {
+    console.warn("[history] could not load history:", err);
+  } finally {
+    historyLoading = false;
+  }
+}
+
+// Build human-friendly entries from a save delta. We use the row's current
+// title as a snapshot so the entry is meaningful even if the row title is
+// edited later or the row is deleted.
+function buildHistoryEntriesFromDelta(delta, srcBlocks, editor, baselineSnapshot) {
+  const nowIso = new Date().toISOString();
+  const out = [];
+
+  // Build a quick lookup from rowKey → { rowTitle, blockType }.
+  const rowMeta = new Map();
+  srcBlocks.forEach((block) => {
+    block.rows?.forEach((row) => {
+      if (!row?.rowKey || row._autoPlaceholder) return;
+      rowMeta.set(row.rowKey, {
+        title: row.title || "(sin título)",
+        blockType: block.blockType || "",
+      });
+    });
+  });
+  // For deleted rows we look back at the snapshot.
+  const snapshotMeta = new Map();
+  baselineSnapshot?.forEach((block) => {
+    block.rows?.forEach((row) => {
+      if (!row?.rowKey || row._autoPlaceholder) return;
+      snapshotMeta.set(row.rowKey, {
+        title: row.title || "(sin título)",
+        blockType: block.blockType || "",
+      });
+    });
+  });
+
+  // Cell edits — we need before/after, which the delta itself doesn't carry
+  // for cellChanges (it has only `after`). Derive `before` from the snapshot.
+  const snapshotRows = new Map();
+  baselineSnapshot?.forEach((block) => {
+    block.rows?.forEach((row) => {
+      if (row?.rowKey) snapshotRows.set(row.rowKey, row);
+    });
+  });
+
+  delta.cellChanges?.forEach(({ rowKey, field, value }) => {
+    const meta = rowMeta.get(rowKey) || snapshotMeta.get(rowKey) || {};
+    const snapRow = snapshotRows.get(rowKey);
+    const before = snapRow ? snapRow[field === "startDateText" ? "startDateText" : field === "endDateText" ? "endDateText" : field] : undefined;
+    out.push({
+      ts: nowIso,
+      editor: editor || "Anónimo",
+      kind: "cell",
+      rowKey,
+      rowTitle: meta.title || "",
+      blockType: meta.blockType || "",
+      column: field,
+      before: formatHistoryValue(before),
+      after: formatHistoryValue(value),
+    });
+  });
+
+  delta.newRows?.forEach(({ rowSnapshot, blockId }) => {
+    const block = srcBlocks.find((b) => b.id === blockId);
+    out.push({
+      ts: nowIso,
+      editor: editor || "Anónimo",
+      kind: "add",
+      rowKey: rowSnapshot?.rowKey || "",
+      rowTitle: rowSnapshot?.title || "(sin título)",
+      blockType: block?.blockType || "",
+    });
+  });
+
+  delta.deletedRowKeys?.forEach((rowKey) => {
+    const meta = snapshotMeta.get(rowKey) || {};
+    out.push({
+      ts: nowIso,
+      editor: editor || "Anónimo",
+      kind: "delete",
+      rowKey,
+      rowTitle: meta.title || "(sin título)",
+      blockType: meta.blockType || "",
+    });
+  });
+
+  return out;
+}
+
+// Fire-and-forget append after a successful save. We re-read the file so two
+// concurrent saves don't trample each other's appends; under heavy contention
+// the latest writer still wins, but the loss is at most a few entries from
+// the *history*, not from the data itself.
+async function appendHistoryEntries(newEntries) {
+  if (!newEntries.length) return;
+  const fileId = await ensureHistoryFile();
+  if (!fileId) return;
+  try {
+    let current;
+    try {
+      current = await window.GoogleDrive.readJsonFile(fileId);
+    } catch (_) {
+      current = { version: 1, entries: [] };
+    }
+    const existing = Array.isArray(current?.entries) ? current.entries : [];
+    const merged = [...newEntries, ...existing].slice(0, HISTORY_MAX_ENTRIES);
+    await window.GoogleDrive.writeJsonFile(fileId, { version: 1, entries: merged });
+    historyEntries = merged;
+    historyLoaded = true;
+    if (historyPanelOpen) renderHistoryPanelContents();
+  } catch (err) {
+    console.warn("[history] could not append entries:", err);
+  }
+}
+
+// =============================================================================
+// HISTORY PANEL UI
+// =============================================================================
+
+function ensureHistoryPanelElement() {
+  let panel = document.getElementById("history-panel");
+  if (panel) return panel;
+  panel = document.createElement("aside");
+  panel.id = "history-panel";
+  panel.className = "history-panel";
+  panel.setAttribute("aria-label", "Últimos cambios");
+  panel.innerHTML = `
+    <header class="history-panel__header">
+      <h2 class="history-panel__title">Últimos cambios</h2>
+      <div class="history-panel__actions">
+        <button type="button" class="history-panel__refresh" aria-label="Refrescar lista">↻</button>
+        <button type="button" class="history-panel__close" aria-label="Cerrar panel">✕</button>
+      </div>
+    </header>
+    <div class="history-panel__list" id="history-panel-list">
+      <div class="history-panel__loading">Cargando…</div>
+    </div>
+  `;
+  document.body.appendChild(panel);
+  panel.querySelector(".history-panel__refresh").addEventListener("click", () => {
+    historyLoaded = false;
+    loadHistory();
+  });
+  panel.querySelector(".history-panel__close").addEventListener("click", () => {
+    closeHistoryPanel();
+  });
+  panel.querySelector(".history-panel__list").addEventListener("click", (event) => {
+    const card = event.target instanceof Element ? event.target.closest("[data-row-key]") : null;
+    if (!card) return;
+    const rowKey = card.dataset.rowKey;
+    if (rowKey) flashRowByKey(rowKey);
+  });
+  return panel;
+}
+
+function renderHistoryPanelContents() {
+  const panel = ensureHistoryPanelElement();
+  const list = panel.querySelector(".history-panel__list");
+  if (!list) return;
+  if (!historyLoaded && historyLoading) {
+    list.innerHTML = `<div class="history-panel__loading">Cargando…</div>`;
+    return;
+  }
+  if (!historyEntries.length) {
+    list.innerHTML = `<div class="history-panel__empty">Aún no hay cambios registrados.</div>`;
+    return;
+  }
+  const html = historyEntries.map((entry) => historyCardHtml(entry)).join("");
+  list.innerHTML = html;
+}
+
+function historyCardHtml(entry) {
+  const initial = (entry.editor || "?").trim().slice(0, 1).toUpperCase();
+  const colour = colourForEditorName(entry.editor);
+  const when = formatHistoryRelativeTime(entry.ts);
+  const blockLabel = entry.blockType ? entry.blockType.toUpperCase() : "";
+  const rowTitle = entry.rowTitle || "(sin título)";
+
+  let body;
+  if (entry.kind === "add") {
+    body = `
+      <div class="history-card__line history-card__line--add">+ Añadió fila</div>
+      <div class="history-card__row">${escapeHtml(rowTitle)}</div>
+    `;
+  } else if (entry.kind === "delete") {
+    body = `
+      <div class="history-card__line history-card__line--delete">− Borró fila</div>
+      <div class="history-card__row">${escapeHtml(rowTitle)}</div>
+    `;
+  } else {
+    const col = formatHistoryColumn(entry.column);
+    body = `
+      <div class="history-card__line">Editó <strong>${escapeHtml(rowTitle)}</strong></div>
+      <div class="history-card__meta">${escapeHtml(col)}</div>
+      <div class="history-card__before">◯ ${escapeHtml(entry.before ?? "(vacío)")}</div>
+      <div class="history-card__after">● ${escapeHtml(entry.after ?? "(vacío)")}</div>
+    `;
+  }
+
+  return `
+    <article class="history-card" data-row-key="${escapeAttr(entry.rowKey || "")}">
+      <div class="history-card__avatar" style="background:${colour}">${escapeHtml(initial)}</div>
+      <div class="history-card__body">
+        <header class="history-card__header">
+          <span class="history-card__name">${escapeHtml(entry.editor || "Anónimo")}</span>
+          <span class="history-card__when">${escapeHtml(when)}</span>
+        </header>
+        ${blockLabel ? `<div class="history-card__block">${escapeHtml(blockLabel)}</div>` : ""}
+        ${body}
+      </div>
+    </article>
+  `;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value);
+}
+
+function openHistoryPanel() {
+  if (historyPanelOpen) return;
+  historyPanelOpen = true;
+  const panel = ensureHistoryPanelElement();
+  panel.classList.add("is-open");
+  document.body.classList.add("history-panel-open");
+  renderHistoryPanelContents();
+  if (!historyLoaded) loadHistory();
+}
+
+function closeHistoryPanel() {
+  historyPanelOpen = false;
+  const panel = document.getElementById("history-panel");
+  if (panel) panel.classList.remove("is-open");
+  document.body.classList.remove("history-panel-open");
+}
+
+function toggleHistoryPanel() {
+  if (historyPanelOpen) closeHistoryPanel();
+  else openHistoryPanel();
+}
+
+// Scroll to the row whose rowKey matches and briefly flash it.
+function flashRowByKey(rowKey) {
+  if (!rowKey) return;
+  const leftBody = document.getElementById("left-body");
+  const rightBody = document.getElementById("right-body");
+  if (!leftBody || !rightBody) return;
+  const target = leftBody.querySelector(`[data-row-id="${CSS.escape(rowKey)}"]`);
+  if (!target) {
+    showGridToast("Esa fila ya no existe en el panel actual");
+    return;
+  }
+  const leftRow = target.closest(".left-row");
+  if (!leftRow) return;
+  leftRow.scrollIntoView({ behavior: "smooth", block: "center" });
+  leftRow.classList.add("is-flash-highlight");
+  // Mirror the flash on the matching day-row (same DOM index in rightBody).
+  const allLeftRows = Array.from(leftBody.children);
+  const idx = allLeftRows.indexOf(leftRow);
+  const dayRow = idx >= 0 ? rightBody.children[idx] : null;
+  dayRow?.classList.add("is-flash-highlight");
+  setTimeout(() => {
+    leftRow.classList.remove("is-flash-highlight");
+    dayRow?.classList.remove("is-flash-highlight");
+  }, HISTORY_FLASH_MS);
+}
+
 async function saveToGoogleDrive() {
   if (!window.GoogleDrive) {
     showGridToast("Servicio no disponible");
@@ -2687,6 +3094,10 @@ async function saveToGoogleDrive() {
     // Merge path: compute local diff vs. snapshot, pull latest from Drive,
     // replay diff on top, upload merged result, adopt as new state.
     const localDelta = computeRowDelta(loadedSnapshot, blocks);
+    // Snapshot before we mutate it — needed to derive "before" values for
+    // the history entries we'll append after the save succeeds.
+    const historyBaseline = loadedSnapshot;
+    const historySrcBlocks = blocks;
     const remoteBuffer = await window.GoogleDrive.loadXlsxBuffer({ useAuth: true });
     const remoteBlocks = parseBufferToBlocks(remoteBuffer);
     applyRowDelta(remoteBlocks, localDelta);
@@ -2700,6 +3111,15 @@ async function saveToGoogleDrive() {
     clearDraft();
     renderRows();
     showGridToast(`Guardado · ${sheetCount} hoja(s)`);
+
+    // Fire-and-forget: log the edit deltas into the change-history file so
+    // other editors (and this one) can review them later via the side panel.
+    const newHistoryEntries = buildHistoryEntriesFromDelta(
+      localDelta, historySrcBlocks, editorName, historyBaseline
+    );
+    if (newHistoryEntries.length) {
+      appendHistoryEntries(newHistoryEntries).catch(() => {});
+    }
   } catch (err) {
     console.error("saveToGoogleDrive error:", err);
     showGridToast("Error al guardar · tus cambios siguen a salvo en este equipo");
@@ -2872,6 +3292,11 @@ function attachExcelExportControls(root) {
     // which mirrors the (self / other) saving flags in real time. No manual
     // disable/enable here — that would race with the global state.
     saveDriveBtn.addEventListener("click", () => { saveToGoogleDrive(); });
+  }
+
+  const historyToggleBtn = root.querySelector("#history-toggle-btn");
+  if (historyToggleBtn) {
+    historyToggleBtn.addEventListener("click", () => { toggleHistoryPanel(); });
   }
 }
 
@@ -5665,6 +6090,12 @@ function renderMonthBlockGrid(root) {
             <button type="button" class="search-box-clear" aria-label="Limpiar búsqueda">✕</button>
           </div>
           ${IS_VIEWER_MODE ? `` : `
+          <button type="button" class="history-toggle-btn" id="history-toggle-btn" aria-label="Últimos cambios">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+              <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 7v5l3 2"/>
+              <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/>
+            </svg>
+          </button>
           <div class="presence-indicator" id="presence-indicator" data-state="loading" role="status" aria-live="polite">
             <span class="presence-indicator__count">…</span>
             <span class="presence-indicator__tooltip" aria-hidden="true"></span>
@@ -6114,6 +6545,10 @@ async function autoLoadFromDrive() {
     // Start broadcasting our heartbeat and polling for other sessions now
     // that Drive is reachable and authenticated.
     startPresenceTracking();
+    // Pre-fetch the change history so the panel is instant when first opened.
+    if (!IS_VIEWER_MODE) {
+      loadHistory().catch(() => { /* swallow — handled inside */ });
+    }
     // La versión de Drive es ahora el estado de referencia; cualquier borrador
     // local representa trabajo posterior sin sincronizar → ofrecer recuperarlo.
     maybeOfferDraftRecovery();

@@ -103,6 +103,10 @@
     saveXlsxBuffer,
     getAppProperties,
     patchAppProperties,
+    findJsonFileByName,
+    createJsonFile,
+    readJsonFile,
+    writeJsonFile,
   };
 
   function init() {
@@ -348,6 +352,93 @@
     }
     const data = await resp.json();
     return data.appProperties || {};
+  }
+
+  // -- Helpers for managing the change-history sidecar file ---------------
+  // The history file lives alongside the Excel and stores recent edits so
+  // the editor panel can render a "Últimos cambios" list à la Excel.
+  // We keep it in its own JSON file because the bag in appProperties is
+  // capped to ~30 entries / 124 chars per value (too small for history).
+
+  // Look for an existing JSON file with this name that this app has access to.
+  // Used on cold boot to discover the history file when appProperties is empty.
+  async function findJsonFileByName(name) {
+    const token = await ensureToken();
+    const q = encodeURIComponent(`name='${name.replace(/'/g, "\\'")}' and trashed=false and mimeType='application/json'`);
+    const url = `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&pageSize=10`;
+    const resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      credentials: "omit",
+    });
+    if (!resp.ok) {
+      throw new Error(`Drive findJsonFileByName failed: HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    return (data.files && data.files[0]?.id) || null;
+  }
+
+  // Create a new JSON file with the given name and content. Drive returns the
+  // file id; the caller is expected to persist it (we stash it in the Excel's
+  // appProperties so other sessions can find it instantly).
+  async function createJsonFile(name, content) {
+    const token = await ensureToken();
+    const boundary = `panel_boundary_${Math.random().toString(36).slice(2)}`;
+    const metadata = { name, mimeType: "application/json" };
+    const body =
+      `--${boundary}\r\n` +
+      `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+      `${JSON.stringify(metadata)}\r\n` +
+      `--${boundary}\r\n` +
+      `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+      `${JSON.stringify(content)}\r\n` +
+      `--${boundary}--`;
+    const url = `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id`;
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": `multipart/related; boundary=${boundary}`,
+      },
+      body,
+    });
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => "");
+      throw new Error(`Drive createJsonFile failed: HTTP ${resp.status} ${errText}`);
+    }
+    const data = await resp.json();
+    return data.id;
+  }
+
+  // Read and parse the contents of a JSON file by its id.
+  async function readJsonFile(fileId) {
+    const token = await ensureToken();
+    const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+    const resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      credentials: "omit",
+    });
+    if (!resp.ok) {
+      throw new Error(`Drive readJsonFile failed: HTTP ${resp.status}`);
+    }
+    return await resp.json();
+  }
+
+  // Overwrite a JSON file's contents (in-place by id). Returns nothing.
+  async function writeJsonFile(fileId, content) {
+    const token = await ensureToken();
+    const url = `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`;
+    const resp = await fetch(url, {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json; charset=UTF-8",
+      },
+      body: JSON.stringify(content),
+    });
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => "");
+      throw new Error(`Drive writeJsonFile failed: HTTP ${resp.status} ${errText}`);
+    }
   }
 
   // Patch the file's appProperties. Drive merges the supplied keys with the
