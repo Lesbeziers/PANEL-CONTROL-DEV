@@ -2800,10 +2800,27 @@ function buildHistoryEntriesFromDelta(delta, srcBlocks, editor, baselineSnapshot
     });
   });
 
+  // Also keep raw month / year so the panel can navigate the calendar when
+  // the user clicks a card whose row lives in a different month.
+  const rowMonthByKey = new Map();
+  srcBlocks.forEach((block) => {
+    block.rows?.forEach((row) => {
+      if (!row?.rowKey) return;
+      rowMonthByKey.set(row.rowKey, { homeMonth: row.homeMonth, homeYear: row.homeYear });
+    });
+  });
+  baselineSnapshot?.forEach((block) => {
+    block.rows?.forEach((row) => {
+      if (!row?.rowKey || rowMonthByKey.has(row.rowKey)) return;
+      rowMonthByKey.set(row.rowKey, { homeMonth: row.homeMonth, homeYear: row.homeYear });
+    });
+  });
+
   delta.cellChanges?.forEach(({ rowKey, field, value }) => {
     const meta = rowMeta.get(rowKey) || snapshotMeta.get(rowKey) || {};
     const snapRow = snapshotRows.get(rowKey);
     const before = snapRow ? snapRow[field === "startDateText" ? "startDateText" : field === "endDateText" ? "endDateText" : field] : undefined;
+    const rowMonth = rowMonthByKey.get(rowKey) || {};
     out.push({
       ts: nowIso,
       editor: editor || "Anónimo",
@@ -2812,6 +2829,8 @@ function buildHistoryEntriesFromDelta(delta, srcBlocks, editor, baselineSnapshot
       rowTitle: meta.title || "",
       blockType: meta.blockType || "",
       monthLabel: meta.monthLabel || "",
+      homeMonth: rowMonth.homeMonth,
+      homeYear: rowMonth.homeYear,
       column: field,
       before: formatHistoryValue(before),
       after: formatHistoryValue(value),
@@ -2828,11 +2847,14 @@ function buildHistoryEntriesFromDelta(delta, srcBlocks, editor, baselineSnapshot
       rowTitle: rowSnapshot?.title || "(sin título)",
       blockType: block?.blockType || "",
       monthLabel: formatHomeMonthLabel(rowSnapshot?.homeMonth, rowSnapshot?.homeYear),
+      homeMonth: rowSnapshot?.homeMonth,
+      homeYear: rowSnapshot?.homeYear,
     });
   });
 
   delta.deletedRowKeys?.forEach((rowKey) => {
     const meta = snapshotMeta.get(rowKey) || {};
+    const rowMonth = rowMonthByKey.get(rowKey) || {};
     out.push({
       ts: nowIso,
       editor: editor || "Anónimo",
@@ -2841,6 +2863,8 @@ function buildHistoryEntriesFromDelta(delta, srcBlocks, editor, baselineSnapshot
       rowTitle: meta.title || "(sin título)",
       blockType: meta.blockType || "",
       monthLabel: meta.monthLabel || "",
+      homeMonth: rowMonth.homeMonth,
+      homeYear: rowMonth.homeYear,
     });
   });
 
@@ -2908,7 +2932,13 @@ function ensureHistoryPanelElement() {
     const card = event.target instanceof Element ? event.target.closest("[data-row-key]") : null;
     if (!card) return;
     const rowKey = card.dataset.rowKey;
-    if (rowKey) flashRowByKey(rowKey);
+    if (!rowKey) return;
+    const targetMonth = Number.parseInt(card.dataset.homeMonth, 10);
+    const targetYear = Number.parseInt(card.dataset.homeYear, 10);
+    flashRowByKey(rowKey, {
+      targetMonth: Number.isInteger(targetMonth) ? targetMonth : null,
+      targetYear: Number.isInteger(targetYear) ? targetYear : null,
+    });
   });
   return panel;
 }
@@ -2964,7 +2994,10 @@ function historyCardHtml(entry) {
   }
 
   return `
-    <article class="history-card" data-row-key="${escapeAttr(entry.rowKey || "")}">
+    <article class="history-card"
+             data-row-key="${escapeAttr(entry.rowKey || "")}"
+             data-home-month="${escapeAttr(Number.isInteger(entry.homeMonth) ? entry.homeMonth : "")}"
+             data-home-year="${escapeAttr(Number.isInteger(entry.homeYear) ? entry.homeYear : "")}">
       <div class="history-card__avatar" style="background:${colour}">${escapeHtml(initial)}</div>
       <div class="history-card__body">
         <header class="history-card__header">
@@ -3016,22 +3049,18 @@ function toggleHistoryPanel() {
   else openHistoryPanel();
 }
 
-// Scroll to the row whose rowKey matches and briefly flash it.
-function flashRowByKey(rowKey) {
-  if (!rowKey) return;
+// Internal: do the scroll + flash, assuming the row is already in the current
+// month view. Returns true on success, false if the row isn't in the DOM.
+function flashRowInCurrentView(rowKey) {
   const leftBody = document.getElementById("left-body");
   const rightBody = document.getElementById("right-body");
-  if (!leftBody || !rightBody) return;
+  if (!leftBody || !rightBody) return false;
   const target = leftBody.querySelector(`[data-row-id="${CSS.escape(rowKey)}"]`);
-  if (!target) {
-    showGridToast("Esa fila ya no existe en el panel actual");
-    return;
-  }
+  if (!target) return false;
   const leftRow = target.closest(".left-row");
-  if (!leftRow) return;
+  if (!leftRow) return false;
   leftRow.scrollIntoView({ behavior: "smooth", block: "center" });
   leftRow.classList.add("is-flash-highlight");
-  // Mirror the flash on the matching day-row (same DOM index in rightBody).
   const allLeftRows = Array.from(leftBody.children);
   const idx = allLeftRows.indexOf(leftRow);
   const dayRow = idx >= 0 ? rightBody.children[idx] : null;
@@ -3040,6 +3069,44 @@ function flashRowByKey(rowKey) {
     leftRow.classList.remove("is-flash-highlight");
     dayRow?.classList.remove("is-flash-highlight");
   }, HISTORY_FLASH_MS);
+  return true;
+}
+
+// Scroll to the row whose rowKey matches and briefly flash it. If the entry
+// has a target month/year and we're currently on a different one, navigate
+// the calendar first, then flash once the new month finishes rendering.
+function flashRowByKey(rowKey, { targetMonth = null, targetYear = null } = {}) {
+  if (!rowKey) return;
+  // Fast path: already showing the right month, or the entry has no month
+  // info (legacy entries from before this field existed).
+  const needsMonthShift =
+    Number.isInteger(targetMonth) && Number.isInteger(targetYear)
+    && (targetMonth !== currentCalendarContext.month || targetYear !== currentCalendarContext.year);
+
+  if (!needsMonthShift) {
+    if (!flashRowInCurrentView(rowKey)) {
+      showGridToast("Esa fila ya no existe en el panel actual");
+    }
+    return;
+  }
+
+  // Navigate the calendar to the target month, then wait for the re-render to
+  // complete before locating the row and flashing it.
+  currentCalendarContext = {
+    month: targetMonth,
+    year: targetYear,
+    daysInMonth: daysInMonth(targetMonth, targetYear),
+  };
+  applyCalendarContextToView(document);
+  // Two RAFs: first one lets the new month layout settle, second guarantees
+  // the new rows are in the DOM by the time we look for them.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (!flashRowInCurrentView(rowKey)) {
+        showGridToast("Esa fila ya no existe en el panel actual");
+      }
+    });
+  });
 }
 
 async function saveToGoogleDrive() {
