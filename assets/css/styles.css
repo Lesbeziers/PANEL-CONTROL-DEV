@@ -1594,15 +1594,30 @@ body {
   font-weight: 600;
 }
 
-/* Flash de la fila al hacer click en una tarjeta */
-@keyframes row-flash-highlight {
-  0%, 100% { background-color: transparent; }
-  15%, 70% { background-color: rgba(46, 184, 78, 0.32); }
+/* Flash de la fila al hacer click en una tarjeta del historial.
+   Usamos un overlay con ::after sobre cada celda izquierda (porque cada
+   celda tiene su propio fondo blanco que tapaba la animación de fondo de
+   la fila) y sobre la day-row entera del lado derecho. Con position:
+   relative + pointer-events:none el overlay no interfiere con clicks. */
+@keyframes row-flash-fade {
+  0%, 100% { opacity: 0; }
+  15%, 70% { opacity: 1; }
 }
 
-.left-row.is-flash-highlight,
+.left-row.is-flash-highlight > div,
 .day-row.is-flash-highlight {
-  animation: row-flash-highlight 2.1s ease-in-out 1;
+  position: relative;
+}
+
+.left-row.is-flash-highlight > div::after,
+.day-row.is-flash-highlight::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-color: rgba(46, 184, 78, 0.45);
+  pointer-events: none;
+  animation: row-flash-fade 2.1s ease-in-out 1;
+  z-index: 3;
 }
 
 /* ── Modal "¿Cómo te llamas?" ──────────────────────────────

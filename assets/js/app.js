@@ -2979,8 +2979,11 @@ function openHistoryPanel() {
   const panel = ensureHistoryPanelElement();
   panel.classList.add("is-open");
   document.body.classList.add("history-panel-open");
+  // Show whatever we have cached immediately, then refetch in the background
+  // so opening the panel always reflects the latest saved changes from any
+  // session — no need for the user to press the manual refresh button.
   renderHistoryPanelContents();
-  if (!historyLoaded) loadHistory();
+  loadHistory();
 }
 
 function closeHistoryPanel() {
