@@ -2752,6 +2752,13 @@ async function loadHistory() {
   }
 }
 
+function formatHomeMonthLabel(homeMonth, homeYear) {
+  if (!Number.isInteger(homeMonth) || !Number.isInteger(homeYear)) return "";
+  const name = MONTH_NAMES_ES[homeMonth - 1];
+  if (!name) return "";
+  return `${name.toUpperCase()} ${homeYear}`;
+}
+
 // Build human-friendly entries from a save delta. We use the row's current
 // title as a snapshot so the entry is meaningful even if the row title is
 // edited later or the row is deleted.
@@ -2759,7 +2766,7 @@ function buildHistoryEntriesFromDelta(delta, srcBlocks, editor, baselineSnapshot
   const nowIso = new Date().toISOString();
   const out = [];
 
-  // Build a quick lookup from rowKey → { rowTitle, blockType }.
+  // Build a quick lookup from rowKey → { rowTitle, blockType, monthLabel }.
   const rowMeta = new Map();
   srcBlocks.forEach((block) => {
     block.rows?.forEach((row) => {
@@ -2767,6 +2774,7 @@ function buildHistoryEntriesFromDelta(delta, srcBlocks, editor, baselineSnapshot
       rowMeta.set(row.rowKey, {
         title: row.title || "(sin título)",
         blockType: block.blockType || "",
+        monthLabel: formatHomeMonthLabel(row.homeMonth, row.homeYear),
       });
     });
   });
@@ -2778,6 +2786,7 @@ function buildHistoryEntriesFromDelta(delta, srcBlocks, editor, baselineSnapshot
       snapshotMeta.set(row.rowKey, {
         title: row.title || "(sin título)",
         blockType: block.blockType || "",
+        monthLabel: formatHomeMonthLabel(row.homeMonth, row.homeYear),
       });
     });
   });
@@ -2802,6 +2811,7 @@ function buildHistoryEntriesFromDelta(delta, srcBlocks, editor, baselineSnapshot
       rowKey,
       rowTitle: meta.title || "",
       blockType: meta.blockType || "",
+      monthLabel: meta.monthLabel || "",
       column: field,
       before: formatHistoryValue(before),
       after: formatHistoryValue(value),
@@ -2817,6 +2827,7 @@ function buildHistoryEntriesFromDelta(delta, srcBlocks, editor, baselineSnapshot
       rowKey: rowSnapshot?.rowKey || "",
       rowTitle: rowSnapshot?.title || "(sin título)",
       blockType: block?.blockType || "",
+      monthLabel: formatHomeMonthLabel(rowSnapshot?.homeMonth, rowSnapshot?.homeYear),
     });
   });
 
@@ -2829,6 +2840,7 @@ function buildHistoryEntriesFromDelta(delta, srcBlocks, editor, baselineSnapshot
       rowKey,
       rowTitle: meta.title || "(sin título)",
       blockType: meta.blockType || "",
+      monthLabel: meta.monthLabel || "",
     });
   });
 
@@ -2921,7 +2933,13 @@ function historyCardHtml(entry) {
   const initial = (entry.editor || "?").trim().slice(0, 1).toUpperCase();
   const colour = colourForEditorName(entry.editor);
   const when = formatHistoryRelativeTime(entry.ts);
-  const blockLabel = entry.blockType ? entry.blockType.toUpperCase() : "";
+  const blockText = entry.blockType ? entry.blockType.toUpperCase() : "";
+  // Prefix the block label with "MES AÑO -" when we know which calendar
+  // month the row lives in. Entries logged before this change won't have it
+  // and will fall back gracefully to just the block name.
+  const blockLabel = entry.monthLabel
+    ? `${entry.monthLabel} – ${blockText}`
+    : blockText;
   const rowTitle = entry.rowTitle || "(sin título)";
 
   let body;
