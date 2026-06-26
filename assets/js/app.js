@@ -2696,25 +2696,45 @@ function colourForEditorName(name) {
   return palette[Math.abs(h) % palette.length];
 }
 
+// Verify that a candidate history file actually belongs to *this* Excel.
+// We embed the Excel's FILE_ID into the history file's content; anything
+// without that marker, or with a mismatching one, is rejected so dev and
+// prod (which share the same Drive account) cannot accidentally share a
+// single history file.
+async function isHistoryFileForThisExcel(fileId, excelFileId) {
+  try {
+    const doc = await window.GoogleDrive.readJsonFile(fileId);
+    return doc?.excelFileId === excelFileId;
+  } catch (_) {
+    return false;
+  }
+}
+
 // Locate the history file once per session. Priority:
-//   1. Excel.appProperties.historyFileId (fast, cross-session)
-//   2. Drive search by HISTORY_FILE_NAME (works on cold migration)
-//   3. Create a fresh file, save the id back into appProperties
+//   1. Excel.appProperties.historyFileId (fast, cross-session) — validated
+//   2. Drive search by HISTORY_FILE_NAME — validated
+//   3. Create a fresh file with excelFileId marker, save the id into
+//      appProperties.
 async function ensureHistoryFile() {
   if (historyFileId) return historyFileId;
   if (!window.GoogleDrive?.getAppProperties) return null;
+  const excelFileId = window.PANEL_CONFIG?.GOOGLE_DRIVE_FILE_ID || "";
+
   try {
     const appProperties = await window.GoogleDrive.getAppProperties();
     const cachedId = appProperties?.[HISTORY_APP_PROP_KEY];
-    if (cachedId) {
+    if (cachedId && await isHistoryFileForThisExcel(cachedId, excelFileId)) {
       historyFileId = cachedId;
       return historyFileId;
     }
-  } catch (_) { /* ignore — fall through to discovery */ }
+    // Cached id is missing, dead, or pointing at a different Excel's
+    // history (e.g. dev/prod cross-contamination from when they shared
+    // a name). Fall through to discovery / fresh creation.
+  } catch (_) { /* ignore — fall through */ }
 
   try {
     const found = await window.GoogleDrive.findJsonFileByName(HISTORY_FILE_NAME);
-    if (found) {
+    if (found && await isHistoryFileForThisExcel(found, excelFileId)) {
       historyFileId = found;
       await window.GoogleDrive.patchAppProperties({ [HISTORY_APP_PROP_KEY]: found });
       return historyFileId;
@@ -2724,6 +2744,7 @@ async function ensureHistoryFile() {
   try {
     const created = await window.GoogleDrive.createJsonFile(HISTORY_FILE_NAME, {
       version: 1,
+      excelFileId,
       entries: [],
     });
     historyFileId = created;
@@ -2879,16 +2900,21 @@ async function appendHistoryEntries(newEntries) {
   if (!newEntries.length) return;
   const fileId = await ensureHistoryFile();
   if (!fileId) return;
+  const excelFileId = window.PANEL_CONFIG?.GOOGLE_DRIVE_FILE_ID || "";
   try {
     let current;
     try {
       current = await window.GoogleDrive.readJsonFile(fileId);
     } catch (_) {
-      current = { version: 1, entries: [] };
+      current = { version: 1, excelFileId, entries: [] };
     }
     const existing = Array.isArray(current?.entries) ? current.entries : [];
     const merged = [...newEntries, ...existing].slice(0, HISTORY_MAX_ENTRIES);
-    await window.GoogleDrive.writeJsonFile(fileId, { version: 1, entries: merged });
+    await window.GoogleDrive.writeJsonFile(fileId, {
+      version: 1,
+      excelFileId,
+      entries: merged,
+    });
     historyEntries = merged;
     historyLoaded = true;
     if (historyPanelOpen) renderHistoryPanelContents();
