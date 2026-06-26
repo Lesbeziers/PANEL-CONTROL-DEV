@@ -3290,6 +3290,23 @@ async function saveToGoogleDrive() {
   }
 }
 
+// Shift an ISO date (YYYY-MM-DD) by `deltaDays` and return it formatted as
+// DD/MM/YY — same display format the rest of the panel uses. Returns "" if
+// the input is missing or not parseable, so callers can fall through with
+// `|| null`.
+function shiftDateTextByDays(isoString, deltaDays) {
+  if (!isoString || typeof isoString !== "string") return "";
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoString);
+  if (!match) return "";
+  const year = Number.parseInt(match[1], 10);
+  const month = Number.parseInt(match[2], 10);
+  const day = Number.parseInt(match[3], 10);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return "";
+  const d = new Date(year, month - 1, day);
+  d.setDate(d.getDate() + deltaDays);
+  return formatDateDisplay(d.getDate(), d.getMonth() + 1, d.getFullYear());
+}
+
 async function exportExcelAplicativo() {
   if (!window.ExcelJS) {
     showGridToast("No se pudo cargar la librería ExcelJS");
@@ -3393,8 +3410,12 @@ async function exportExcelAplicativo() {
 
       const values = Array(COL_DEFS.length).fill(null);
       values[0]  = titulo;
-      values[1]  = row.startDateText || null;
-      values[2]  = row.endDateText   || null;
+      // fecha_entrega: la fecha de inicio de vigencia MENOS una semana,
+      // porque la entrega del material al aplicativo debe ir 7 días por
+      // delante de la fecha de inicio en el panel.
+      values[1]  = shiftDateTextByDays(row.startDateISO, -7) || null;
+      // fecha_programacion: la fecha de inicio de vigencia (antes era el fin).
+      values[2]  = row.startDateText || null;
       values[3]  = tipo;
       values[19] = "OK";        // material
       values[23] = "no lleva";  // calificacion
