@@ -3396,12 +3396,21 @@ async function exportExcelAplicativo() {
   headerRow.eachCell((cell) => applyBlueHeader(cell));
   headerRow.commit();
 
-  // Todas las filas de datos del mes, sin separadores de bloque
+  // Todas las filas de datos del mes, sin separadores de bloque.
+  // Filtramos por la fecha REAL de inicio de vigencia (no por el mes donde
+  // vive la fila en el panel) para evitar que una misma promo aparezca en
+  // dos meses de Aplicativo distintos cuando se cruza entre meses.
+  const isInExportMonth = (row) => {
+    if (!row?.startDateISO) return false;
+    const m = /^(\d{4})-(\d{2})-/.exec(row.startDateISO);
+    if (!m) return false;
+    return Number.parseInt(m[1], 10) === year && Number.parseInt(m[2], 10) === month;
+  };
   blocks.forEach((block) => {
     if (block.isSeparator) return;
 
     const monthRows = block.rows.filter(
-      (row) => row.homeMonth === month && row.homeYear === year && !isPlaceholderRow(row)
+      (row) => !isPlaceholderRow(row) && isInExportMonth(row)
     );
 
     monthRows.forEach((row) => {
