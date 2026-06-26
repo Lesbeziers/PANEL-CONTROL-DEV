@@ -6216,10 +6216,7 @@ function renderMonthBlockGrid(root) {
           </div>
           ${IS_VIEWER_MODE ? `` : `
           <button type="button" class="history-toggle-btn" id="history-toggle-btn" aria-label="Últimos cambios">
-            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
-              <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 7v5l3 2"/>
-              <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/>
-            </svg>
+            <img src="assets/img/ic_historial.svg" alt="" width="18" height="18" />
           </button>
           <div class="presence-indicator" id="presence-indicator" data-state="loading" role="status" aria-live="polite">
             <span class="presence-indicator__count">…</span>
