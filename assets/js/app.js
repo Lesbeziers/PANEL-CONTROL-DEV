@@ -2929,16 +2929,33 @@ function ensureHistoryPanelElement() {
     closeHistoryPanel();
   });
   panel.querySelector(".history-panel__list").addEventListener("click", (event) => {
-    const card = event.target instanceof Element ? event.target.closest("[data-row-key]") : null;
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+
+    // "Ir a la fila" button — takes precedence over the toggle behaviour so
+    // expanding remains separate from navigating.
+    const jumpBtn = target.closest(".history-card__jump");
+    if (jumpBtn) {
+      const rowKey = jumpBtn.dataset.rowKey;
+      if (!rowKey) return;
+      const targetMonth = Number.parseInt(jumpBtn.dataset.homeMonth, 10);
+      const targetYear = Number.parseInt(jumpBtn.dataset.homeYear, 10);
+      flashRowByKey(rowKey, {
+        targetMonth: Number.isInteger(targetMonth) ? targetMonth : null,
+        targetYear: Number.isInteger(targetYear) ? targetYear : null,
+      });
+      return;
+    }
+
+    // Otherwise click anywhere on the card → accordion toggle.
+    const card = target.closest(".history-card");
     if (!card) return;
-    const rowKey = card.dataset.rowKey;
-    if (!rowKey) return;
-    const targetMonth = Number.parseInt(card.dataset.homeMonth, 10);
-    const targetYear = Number.parseInt(card.dataset.homeYear, 10);
-    flashRowByKey(rowKey, {
-      targetMonth: Number.isInteger(targetMonth) ? targetMonth : null,
-      targetYear: Number.isInteger(targetYear) ? targetYear : null,
+    const wasExpanded = card.classList.contains("is-expanded");
+    // Collapse any other expanded card first (single-expand accordion).
+    panel.querySelectorAll(".history-card.is-expanded").forEach((c) => {
+      c.classList.remove("is-expanded");
     });
+    if (!wasExpanded) card.classList.add("is-expanded");
   });
   return panel;
 }
@@ -2972,26 +2989,42 @@ function historyCardHtml(entry) {
     : blockText;
   const rowTitle = entry.rowTitle || "(sin título)";
 
-  let body;
+  // Summary line — visible both collapsed and expanded. Minimal info so the
+  // user can recognise the change without having to open the card.
+  let summary;
   if (entry.kind === "add") {
-    body = `
-      <div class="history-card__line history-card__line--add">+ Añadió fila</div>
-      <div class="history-card__row">${escapeHtml(rowTitle)}</div>
-    `;
+    summary = `<div class="history-card__summary history-card__summary--add">+ Añadió <strong>${escapeHtml(rowTitle)}</strong></div>`;
   } else if (entry.kind === "delete") {
-    body = `
-      <div class="history-card__line history-card__line--delete">− Borró fila</div>
-      <div class="history-card__row">${escapeHtml(rowTitle)}</div>
-    `;
+    summary = `<div class="history-card__summary history-card__summary--delete">− Borró <strong>${escapeHtml(rowTitle)}</strong></div>`;
   } else {
+    summary = `<div class="history-card__summary">Editó <strong>${escapeHtml(rowTitle)}</strong></div>`;
+  }
+
+  // Detail section — hidden until the card is expanded. For cell edits shows
+  // column + before/after. Always ends with the "Ir a la fila" button.
+  let details = "";
+  if (entry.kind === "cell") {
     const col = formatHistoryColumn(entry.column);
-    body = `
-      <div class="history-card__line">Editó <strong>${escapeHtml(rowTitle)}</strong></div>
+    details = `
       <div class="history-card__meta">${escapeHtml(col)}</div>
       <div class="history-card__before">◯ ${escapeHtml(entry.before ?? "(vacío)")}</div>
       <div class="history-card__after">● ${escapeHtml(entry.after ?? "(vacío)")}</div>
     `;
   }
+  const jumpBtn = `
+    <div class="history-card__details-footer">
+      <button type="button"
+              class="history-card__jump"
+              data-row-key="${escapeAttr(entry.rowKey || "")}"
+              data-home-month="${escapeAttr(Number.isInteger(entry.homeMonth) ? entry.homeMonth : "")}"
+              data-home-year="${escapeAttr(Number.isInteger(entry.homeYear) ? entry.homeYear : "")}">
+        Ir a la fila
+        <svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true" focusable="false">
+          <path d="M5 12h14M13 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
+  `;
 
   return `
     <article class="history-card"
@@ -3005,7 +3038,11 @@ function historyCardHtml(entry) {
           <span class="history-card__when">${escapeHtml(when)}</span>
         </header>
         ${blockLabel ? `<div class="history-card__block">${escapeHtml(blockLabel)}</div>` : ""}
-        ${body}
+        ${summary}
+        <div class="history-card__details">
+          ${details}
+          ${jumpBtn}
+        </div>
       </div>
     </article>
   `;

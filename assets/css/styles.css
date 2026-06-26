@@ -1543,30 +1543,35 @@ body {
   margin-bottom: 4px;
 }
 
-.history-card__line {
+/* Línea-resumen visible siempre (colapsada o expandida). */
+.history-card__summary {
   font-size: 13px;
   color: #1f2937;
   line-height: 1.4;
-  margin-bottom: 2px;
-}
-
-.history-card__line--add {
-  color: #1f6f3b;
-  font-weight: 700;
-}
-
-.history-card__line--delete {
-  color: #a04a0a;
-  font-weight: 700;
-}
-
-.history-card__row {
-  font-size: 12.5px;
-  color: #374151;
-  font-style: italic;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.history-card__summary--add {
+  color: #1f6f3b;
+}
+
+.history-card__summary--delete {
+  color: #a04a0a;
+}
+
+/* Sección de detalle — oculta por defecto, visible cuando la tarjeta
+   está expandida (acordeón gestionado en JS). */
+.history-card__details {
+  display: none;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed #e5e7eb;
+}
+
+.history-card.is-expanded .history-card__details {
+  display: block;
 }
 
 .history-card__meta {
@@ -1592,6 +1597,40 @@ body {
 .history-card__after {
   color: #1f6f3b;
   font-weight: 600;
+}
+
+/* Botón "Ir a la fila" — discreto pero claro. Alineado a la derecha del
+   detalle. No abre/cierra la tarjeta cuando se pulsa. */
+.history-card__details-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.history-card__jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: #1a73e8;
+  font-size: 12px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.history-card__jump:hover,
+.history-card__jump:focus-visible {
+  background: rgba(26, 115, 232, 0.1);
+  outline: none;
+}
+
+.history-card__jump svg {
+  display: block;
 }
 
 /* Flash de la fila al hacer click en una tarjeta del historial.
