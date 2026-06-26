@@ -3281,7 +3281,7 @@ async function exportExcelAplicativo() {
     "intruso":                    "Intruso",
     "loop proteccion pop-ups":    "Loop",
     "loop protección pop-ups":    "Loop",
-    "canales laliga":             "Canal LaLiga",
+    "canales laliga":             "Promo",
     "canales golf":               "Promo",
     "canales caza y pesca":       "Promo",
     "arranque":                   "Arranque",
