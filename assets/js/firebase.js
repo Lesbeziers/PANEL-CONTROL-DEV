@@ -57,6 +57,11 @@ if (!config || !config.projectId) {
       migrateBlocksToFirestore,
       countFirestoreRows,
       clearAllFirestoreRows,
+      // Capa de escritura en vivo (Fase 1.3b). El resto del panel las llama
+      // cada vez que hay una edición, un insert o un delete.
+      writeRowToFirestore,
+      softDeleteRowInFirestore,
+      syncBlockOrderIndicesToFirestore,
     };
 
     console.info(`[firebase] SDK inicializado contra proyecto: ${config.projectId}`);
@@ -194,6 +199,101 @@ async function migrateBlocksToFirestore(blocks, options = {}) {
 
   console.info(`[migrate] ✅ Completado: ${count} filas migradas, ${skipped} placeholder/vacías omitidas`);
   return { count, skipped };
+}
+
+// =============================================================================
+// LIVE WRITE LAYER — Fase 1.3b
+//
+// Estas funciones sustituyen al flujo de guardado xlsx-a-Drive. Se llaman
+// desde app.js cada vez que se edita una celda, se inserta o se borra una
+// fila. Escriben directo a Firestore con setDoc({merge:true}) — la primera
+// escritura crea el documento, las siguientes solo tocan los campos que
+// cambiaron.
+// =============================================================================
+
+/**
+ * Persiste una fila entera en `panels/{panelId}/rows/{rowKey}`.
+ * Idempotente. Si el documento no existe, lo crea; si existe, sobrescribe
+ * campos con merge (los campos NO enviados se preservan).
+ */
+async function writeRowToFirestore(blockId, row, options = {}) {
+  const { editor = "anon", panelId = "main" } = options;
+  if (!window.PanelFirebase?.db) return false;
+  if (!row?.rowKey || !blockId) {
+    console.warn("[firestore-write] rowKey o blockId faltan, aborto:", row?.rowKey, blockId);
+    return false;
+  }
+  const db = window.PanelFirebase.db;
+  const payload = {
+    blockId,
+    title: row.title || "",
+    id: row.id || "",
+    genre: row.genre || "",
+    startDateText: row.startDateText || "",
+    startDateISO: row.startDateISO || "",
+    endDateText: row.endDateText || "",
+    endDateISO: row.endDateISO || "",
+    listoByMonth: row.listoByMonth || {},
+    actualizado: !!row.actualizado,
+    homeMonth: Number.isInteger(row.homeMonth) ? row.homeMonth : null,
+    homeYear: Number.isInteger(row.homeYear) ? row.homeYear : null,
+    deleted: false,
+    updatedAt: serverTimestamp(),
+    updatedBy: editor,
+  };
+  if (Number.isInteger(options.orderIndex)) payload.orderIndex = options.orderIndex;
+  const rowRef = doc(db, "panels", panelId, "rows", row.rowKey);
+  await setDoc(rowRef, payload, { merge: true });
+  return true;
+}
+
+/**
+ * Marca una fila como borrada. NO borra el documento físicamente — así
+ * queda auditoría y se puede recuperar. Los loaders ignoran deleted:true.
+ */
+async function softDeleteRowInFirestore(rowKey, options = {}) {
+  const { editor = "anon", panelId = "main" } = options;
+  if (!window.PanelFirebase?.db || !rowKey) return false;
+  const db = window.PanelFirebase.db;
+  const rowRef = doc(db, "panels", panelId, "rows", rowKey);
+  await setDoc(rowRef, {
+    deleted: true,
+    deletedAt: serverTimestamp(),
+    deletedBy: editor,
+    updatedAt: serverTimestamp(),
+    updatedBy: editor,
+  }, { merge: true });
+  return true;
+}
+
+/**
+ * Reescribe orderIndex para todas las filas visibles de un bloque, en
+ * batch. Se llama después de insertar/borrar filas para mantener el orden
+ * consistente en Firestore. Ignora placeholders (los que aún no existen
+ * como documento).
+ */
+async function syncBlockOrderIndicesToFirestore(blockId, rows, options = {}) {
+  const { editor = "anon", panelId = "main" } = options;
+  if (!window.PanelFirebase?.db || !Array.isArray(rows)) return false;
+  const db = window.PanelFirebase.db;
+  const now = serverTimestamp();
+
+  const batch = writeBatch(db);
+  let count = 0;
+  rows.forEach((row, index) => {
+    if (!row?.rowKey || row._autoPlaceholder) return;
+    const rowRef = doc(db, "panels", panelId, "rows", row.rowKey);
+    batch.set(rowRef, {
+      blockId,
+      orderIndex: index,
+      updatedAt: now,
+      updatedBy: editor,
+    }, { merge: true });
+    count += 1;
+  });
+  if (count === 0) return true;
+  await batch.commit();
+  return count;
 }
 
 /**

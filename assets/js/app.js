@@ -82,6 +82,12 @@ function writeDraftNow() {
   if (IS_VIEWER_MODE || !hasLocalStorage()) {
     return;
   }
+  // Fase 1.3b: cuando Firestore es la fuente de verdad, cada edición ya se
+  // persiste remotamente. El borrador local pierde sentido y solo genera
+  // confusión (podría ofrecer restaurar un estado obsoleto). Se salta.
+  if (window.PANEL_CONFIG?.USE_FIRESTORE_AS_SOURCE) {
+    return;
+  }
   // Skip autosave while the user is mid-edit in a cell — the JSON.stringify
   // of the full blocks structure can stall the main thread for tens of ms on
   // older machines, which manifests as input lag. The autosave will re-fire
@@ -111,6 +117,10 @@ function writeDraftNow() {
 
 function scheduleDraftAutosave() {
   if (IS_VIEWER_MODE || !hasLocalStorage()) {
+    return;
+  }
+  // Fase 1.3b — misma razón que writeDraftNow.
+  if (window.PANEL_CONFIG?.USE_FIRESTORE_AS_SOURCE) {
     return;
   }
   if (draftAutosaveTimer) {
@@ -699,6 +709,8 @@ function applyPatch(patch, direction) {
     } else if (patch.columnKey === "id") {
       row.id = normalized;
     }
+    // Persistir en Firestore (Fase 1.3b) — undo/redo también persiste.
+    scheduleFirestoreRowSync(row, block.id);
     return;
   }
 
@@ -715,6 +727,22 @@ function applyPatch(patch, direction) {
       nextRows.splice(patch.atIndex, patch.rows.length);
     }
     blocks[patch.blockIndex] = { ...block, rows: nextRows };
+
+    // Persistir en Firestore (Fase 1.3b): forward = crear filas, back = soft-delete.
+    if (isFirestoreSourceActive()) {
+      (async () => {
+        if (direction === "forward") {
+          for (const r of patch.rows) {
+            await flushFirestoreRowImmediate(r, block.id);
+          }
+        } else {
+          for (const r of patch.rows) {
+            if (r?.rowKey && !r._autoPlaceholder) await flushFirestoreSoftDelete(r.rowKey);
+          }
+        }
+        await flushFirestoreOrderResync(block.id, blocks[patch.blockIndex].rows);
+      })();
+    }
     return;
   }
 
@@ -736,6 +764,22 @@ function applyPatch(patch, direction) {
       nextRows.splice(patch.atIndex, 0, ...cloneRows(patch.rows));
     }
     blocks[patch.blockIndex] = { ...block, rows: nextRows };
+
+    // Persistir en Firestore (Fase 1.3b): forward = soft-delete, back = re-crear.
+    if (isFirestoreSourceActive()) {
+      (async () => {
+        if (direction === "forward") {
+          for (const r of patch.rows) {
+            if (r?.rowKey && !r._autoPlaceholder) await flushFirestoreSoftDelete(r.rowKey);
+          }
+        } else {
+          for (const r of patch.rows) {
+            await flushFirestoreRowImmediate(r, block.id);
+          }
+        }
+        await flushFirestoreOrderResync(block.id, blocks[patch.blockIndex].rows);
+      })();
+    }
   }
 }
 
@@ -3924,6 +3968,10 @@ function setCellValue(cell, rawValue, historyOptions = {}) {
         groupKey: historyOptions.groupKey || `${meta.blockIndex}:${meta.rowIndex}:${meta.columnKey}`,
       }
     );
+    // Persistir la edición en Firestore (Fase 1.3b) con debounce por fila.
+    // Ignora placeholders y no-op si el flag está en false.
+    const blockId = blocks[meta.blockIndex]?.id;
+    if (blockId) scheduleFirestoreRowSync(row, blockId);
   }
 
   return { row, meta };
@@ -5504,6 +5552,19 @@ function insertRows(blockIndex, atIndex, count = 1, options = {}) {
     { type: options.historyType || "rows", groupKey: options.groupKey || `insert:${blockIndex}:${atIndex}` }
   );
 
+  // Persistir en Firestore (Fase 1.3b): 1) crear cada fila nueva, 2)
+  // reescribir orderIndex de todo el bloque para que las filas por debajo
+  // reflejen su nueva posición.
+  if (isFirestoreSourceActive()) {
+    const blockId = block.id;
+    (async () => {
+      for (const newRow of rowsToInsert) {
+        await flushFirestoreRowImmediate(newRow, blockId);
+      }
+      await flushFirestoreOrderResync(blockId, blocks[blockIndex].rows);
+    })();
+  }
+
   if (options.render !== false) {
     renderRows();
   }
@@ -5550,6 +5611,20 @@ function deleteRowsInBlock(blockIndex, startRow, endRow, options = {}) {
     },
     { type: options.historyType || "rows", groupKey: options.groupKey || `delete:${blockIndex}:${safeStart}` }
   );
+
+  // Persistir en Firestore (Fase 1.3b): soft-delete de cada fila removida
+  // + reescritura del orderIndex del bloque para las que quedan.
+  if (isFirestoreSourceActive()) {
+    const blockId = block.id;
+    (async () => {
+      for (const removed of removedRows) {
+        if (removed?.rowKey && !removed._autoPlaceholder) {
+          await flushFirestoreSoftDelete(removed.rowKey);
+        }
+      }
+      await flushFirestoreOrderResync(blockId, blocks[blockIndex].rows);
+    })();
+  }
 
   return {
     removedStart: safeStart,
@@ -5785,6 +5860,8 @@ function toggleRowActualizado(blockIndex, rowIndex) {
     return;
   }
   row.actualizado = !row.actualizado;
+  // Persistir en Firestore (Fase 1.3b)
+  scheduleFirestoreRowSync(row, block.id);
   renderRows();
 }
 
@@ -5971,6 +6048,8 @@ function attachBlockListoCheckbox(cell, block) {
         if (before !== after) {
           addPatchToCurrentAction(createSetCellPatch({ blockIndex: blocks.findIndex((candidate) => candidate.id === block.id), rowIndex, rowKey: row.rowKey, columnKey: "listo", monthKey }, before, after), { type: "toggle", groupKey: `toggle-block:${block.id}` });
           setRowListo(row, targetValue);
+          // Persistir en Firestore (Fase 1.3b) — cada fila afectada individualmente.
+          scheduleFirestoreRowSync(row, block.id);
         }
       });
       renderRows();
@@ -6261,7 +6340,7 @@ function renderMonthBlockGrid(root) {
 
       <div class="panel-layout__toolbar" aria-label="Acciones del panel">
         <div class="panel-layout__toolbar-inner">
-          ${IS_VIEWER_MODE ? `` : `
+          ${(IS_VIEWER_MODE || window.PANEL_CONFIG?.USE_FIRESTORE_AS_SOURCE) ? `` : `
           <button type="button" class="save-drive-btn" id="save-drive-btn">GUARDAR</button>
           `}
           <button type="button" class="export-excel-btn export-excel-btn--viewer" data-export="aplicativo">EXPORTAR APLICATIVO</button>
@@ -6734,6 +6813,83 @@ async function autoLoadFromDrive() {
   } catch (err) {
     showGridToast("No se pudo cargar el Excel");
     console.error("autoLoadFromDrive error:", err);
+  }
+}
+
+// =============================================================================
+// FIRESTORE WRITE LAYER (Fase 1.3b)
+//
+// Cada edición dispara un write a Firestore con debounce corto por rowKey.
+// Insertar y borrar filas producen writes inmediatos (sin debounce) más una
+// resincronización batch del orderIndex del bloque. La lógica de guardado
+// vía xlsx en Drive se desactiva vía flag USE_FIRESTORE_AS_SOURCE.
+// =============================================================================
+
+const FIRESTORE_SYNC_DEBOUNCE_MS = 400;
+const firestoreSyncTimers = new Map(); // rowKey -> timeout id
+
+function isFirestoreSourceActive() {
+  return window.PANEL_CONFIG?.USE_FIRESTORE_AS_SOURCE === true
+    && !!window.PanelFirebase?.writeRowToFirestore;
+}
+
+function scheduleFirestoreRowSync(row, blockId) {
+  if (!isFirestoreSourceActive()) return;
+  if (!row?.rowKey || row._autoPlaceholder) return;
+  if (!blockId) return;
+
+  const key = row.rowKey;
+  const existing = firestoreSyncTimers.get(key);
+  if (existing) clearTimeout(existing);
+
+  const timer = setTimeout(() => {
+    firestoreSyncTimers.delete(key);
+    window.PanelFirebase.writeRowToFirestore(blockId, row, { editor: editorName || "anon" })
+      .catch((err) => console.error("[firestore-sync] error:", err, "row:", row.rowKey));
+  }, FIRESTORE_SYNC_DEBOUNCE_MS);
+  firestoreSyncTimers.set(key, timer);
+}
+
+async function flushFirestoreRowImmediate(row, blockId, extra = {}) {
+  if (!isFirestoreSourceActive()) return false;
+  if (!row?.rowKey || row._autoPlaceholder || !blockId) return false;
+  // Cancela cualquier debounce pendiente para esta fila
+  const existing = firestoreSyncTimers.get(row.rowKey);
+  if (existing) { clearTimeout(existing); firestoreSyncTimers.delete(row.rowKey); }
+  try {
+    await window.PanelFirebase.writeRowToFirestore(blockId, row, {
+      editor: editorName || "anon",
+      ...extra,
+    });
+    return true;
+  } catch (err) {
+    console.error("[firestore-sync] flush error:", err, "row:", row.rowKey);
+    return false;
+  }
+}
+
+async function flushFirestoreSoftDelete(rowKey) {
+  if (!isFirestoreSourceActive()) return false;
+  if (!rowKey) return false;
+  const existing = firestoreSyncTimers.get(rowKey);
+  if (existing) { clearTimeout(existing); firestoreSyncTimers.delete(rowKey); }
+  try {
+    await window.PanelFirebase.softDeleteRowInFirestore(rowKey, { editor: editorName || "anon" });
+    return true;
+  } catch (err) {
+    console.error("[firestore-sync] soft-delete error:", err, "rowKey:", rowKey);
+    return false;
+  }
+}
+
+async function flushFirestoreOrderResync(blockId, rows) {
+  if (!isFirestoreSourceActive() || !blockId) return false;
+  try {
+    await window.PanelFirebase.syncBlockOrderIndicesToFirestore(blockId, rows, { editor: editorName || "anon" });
+    return true;
+  } catch (err) {
+    console.error("[firestore-sync] order-resync error:", err, "blockId:", blockId);
+    return false;
   }
 }
 
