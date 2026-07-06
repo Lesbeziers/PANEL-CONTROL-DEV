@@ -9,6 +9,12 @@ window.PANEL_CONFIG = {
   GOOGLE_API_KEY: "AIzaSyCfP4msV5hM8D3nCoGGvF56lhWHuKMNSPQ",
   GOOGLE_DRIVE_FILE_ID: "1_ftcdXkF2Pa6NQouFVvNXuhqqMODqUxI",
   GOOGLE_DRIVE_FILE_NAME: "PANEL_CONTROL_DATA_TEST.xlsx",
+
+  // Fase 1.3 — fuente de datos.
+  //   true  → cargar desde Firestore (panels/main/rows)
+  //   false → cargar desde Excel en Drive (legacy)
+  // En dev empezamos ya a leer de Firestore. En main sigue en false hasta el cutover.
+  USE_FIRESTORE_AS_SOURCE: true,
 };
 
 // Firebase — proyecto DEV.

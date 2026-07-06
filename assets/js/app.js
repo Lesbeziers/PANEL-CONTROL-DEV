@@ -6737,27 +6737,134 @@ async function autoLoadFromDrive() {
   }
 }
 
-renderMonthBlockGrid(document.getElementById("app"));
+// =============================================================================
+// FIRESTORE LOAD (Fase 1.3a)
+//
+// Sustituye la carga inicial desde Drive por una lectura de Firestore. El
+// resto del flujo (guardar, presencia, historial, export) sigue funcionando
+// con Drive por ahora — se irán migrando en fases posteriores.
+// =============================================================================
+async function loadPanelFromFirestore() {
+  if (!window.PanelFirebase?.db) {
+    console.error("[firestore-load] Firebase no está inicializado");
+    return false;
+  }
+  const fb = window.PanelFirebase;
+  const { collection, getDocs } = fb.utils;
 
-if (IS_VIEWER_MODE) {
-  autoLoadFromDrive();
-} else {
-  // Editor: requiere sign-in OAuth antes de cargar datos.
-  if (window.GoogleDrive?.isSignedIn?.()) {
-    autoLoadFromDrive();
-  } else {
-    document.addEventListener("gdrive:signedin", autoLoadFromDrive, { once: true });
-    if (window.GoogleDrive?.showGate) {
-      window.GoogleDrive.showGate();
-    } else {
-      // GIS aún no disponible — esperar y reintentar
-      const waitInterval = setInterval(() => {
-        if (window.GoogleDrive?.showGate) {
-          clearInterval(waitInterval);
-          window.GoogleDrive.showGate();
-        }
-      }, 100);
-      setTimeout(() => clearInterval(waitInterval), 10000);
-    }
+  showGridToast("Cargando datos desde Firestore…");
+
+  try {
+    // Reinicia la estructura de bloques con los placeholders por defecto.
+    blocks = createDefaultBlocks();
+
+    const rowsSnap = await getDocs(collection(fb.db, "panels", "main", "rows"));
+
+    // Agrupamos las filas por bloque y respetamos orderIndex para orden
+    // estable — Firestore no garantiza el orden salvo si lo pedimos.
+    const rowsByBlock = new Map();
+    rowsSnap.forEach((docSnap) => {
+      const data = docSnap.data();
+      if (data.deleted) return;
+      const blockId = data.blockId;
+      if (!blockId) return;
+      if (!rowsByBlock.has(blockId)) rowsByBlock.set(blockId, []);
+      rowsByBlock.get(blockId).push({ rowKey: docSnap.id, data });
+    });
+
+    let totalLoaded = 0;
+    blocks.forEach((block) => {
+      if (block.isSeparator) return;
+      const entries = rowsByBlock.get(block.id);
+      if (!entries || !entries.length) return;
+
+      entries.sort((a, b) => (a.data.orderIndex ?? 0) - (b.data.orderIndex ?? 0));
+
+      // Sustituye los placeholders por las filas reales
+      block.rows = entries.map(({ rowKey, data }) => ({
+        rowKey,
+        _autoPlaceholder: false,
+        id: data.id || "",
+        blockType: block.blockType,
+        title: data.title || "",
+        genre: data.genre || "",
+        startDateText: data.startDateText || "",
+        startDateISO: data.startDateISO || "",
+        startDateError: null,
+        endDateText: data.endDateText || "",
+        endDateISO: data.endDateISO || "",
+        endDateError: null,
+        dateRangeError: null,
+        listoByMonth: data.listoByMonth || {},
+        actualizado: !!data.actualizado,
+        homeMonth: Number.isInteger(data.homeMonth) ? data.homeMonth : DEFAULT_CALENDAR_CONTEXT.month,
+        homeYear: Number.isInteger(data.homeYear) ? data.homeYear : DEFAULT_CALENDAR_CONTEXT.year,
+      }));
+      totalLoaded += entries.length;
+    });
+
+    // Snapshot de referencia — mantiene compatibilidad con el resto del flujo
+    // que todavía consulta loadedSnapshot (será eliminado cuando reescribamos
+    // la capa de guardado, Fase 1.4).
+    loadedSnapshot = deepCloneBlocks(blocks);
+    initialDriveLoadDone = true;
+
+    validateAllRowsDateRanges();
+    applyCalendarContextToView(document);
+    renderRows();
+
+    showGridToast(`Cargadas ${totalLoaded} filas desde Firestore`);
+    console.info(`[firestore-load] ${totalLoaded} filas cargadas desde panels/main/rows`);
+
+    // NO llamamos a maybeOfferDraftRecovery aquí — el sistema de borrador
+    // local es incompatible con el modelo de Firestore (cada edición ya se
+    // persiste al instante). Se retirará en fases posteriores.
+    return true;
+  } catch (err) {
+    console.error("[firestore-load] error:", err);
+    showGridToast("Error al cargar datos desde Firestore");
+    return false;
   }
 }
+
+// Selector de fuente de datos. La rama dev tiene el flag activado; la rama
+// main lo mantendrá desactivado hasta el cutover final.
+function bootInitialLoad() {
+  const useFirestore = window.PANEL_CONFIG?.USE_FIRESTORE_AS_SOURCE === true;
+
+  if (useFirestore) {
+    // Firebase se inicializa como módulo aparte, puede no estar listo aún.
+    if (window.PanelFirebase?.db) {
+      loadPanelFromFirestore();
+    } else {
+      document.addEventListener("firebase:ready", () => loadPanelFromFirestore(), { once: true });
+    }
+    return;
+  }
+
+  // Legacy: carga desde Google Drive (comportamiento previo).
+  if (IS_VIEWER_MODE) {
+    autoLoadFromDrive();
+    return;
+  }
+  if (window.GoogleDrive?.isSignedIn?.()) {
+    autoLoadFromDrive();
+    return;
+  }
+  document.addEventListener("gdrive:signedin", autoLoadFromDrive, { once: true });
+  if (window.GoogleDrive?.showGate) {
+    window.GoogleDrive.showGate();
+  } else {
+    const waitInterval = setInterval(() => {
+      if (window.GoogleDrive?.showGate) {
+        clearInterval(waitInterval);
+        window.GoogleDrive.showGate();
+      }
+    }, 100);
+    setTimeout(() => clearInterval(waitInterval), 10000);
+  }
+}
+
+renderMonthBlockGrid(document.getElementById("app"));
+
+bootInitialLoad();
