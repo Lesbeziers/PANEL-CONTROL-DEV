@@ -7133,16 +7133,23 @@ function logMutationToHistory(entry) {
 
 // Helper: construye la parte de metadata común (editor, blockType, monthLabel,
 // etc.) a partir de una row y su blockIndex.
+//
+// El "mes de la entrada" es el mes que estás VIENDO cuando haces el cambio,
+// no el homeMonth histórico de la fila. Motivo: una fila creada en junio con
+// fechas en julio se ve en julio; al pulsar "Ir a la fila" queremos volver
+// donde estabas editando, no al mes de creación (donde ya no es visible).
 function buildHistoryRowMeta(row, block) {
+  const ctxMonth = Number.isInteger(currentCalendarContext?.month) ? currentCalendarContext.month : row?.homeMonth ?? null;
+  const ctxYear = Number.isInteger(currentCalendarContext?.year) ? currentCalendarContext.year : row?.homeYear ?? null;
   return {
     editor: editorName || "Anónimo",
     rowKey: row?.rowKey || "",
     rowTitle: row?.title || "",
     blockType: block?.blockType || "",
     monthLabel: (typeof formatHomeMonthLabel === "function")
-      ? formatHomeMonthLabel(row?.homeMonth, row?.homeYear) : "",
-    homeMonth: row?.homeMonth ?? null,
-    homeYear: row?.homeYear ?? null,
+      ? formatHomeMonthLabel(ctxMonth, ctxYear) : "",
+    homeMonth: ctxMonth,
+    homeYear: ctxYear,
   };
 }
 
