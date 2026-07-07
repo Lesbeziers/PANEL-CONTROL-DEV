@@ -15,6 +15,12 @@ window.PANEL_CONFIG = {
   //   false → cargar desde Excel en Drive (legacy)
   // En dev empezamos ya a leer de Firestore. En main sigue en false hasta el cutover.
   USE_FIRESTORE_AS_SOURCE: true,
+
+  // Fase 1.4 — email de la cuenta compartida autorizada a escribir en
+  // Firestore. Las Security Rules validan que request.auth.token.email
+  // coincida con este valor. El editor lo comprueba también en cliente para
+  // dar mensaje de error amigable si alguien firma con otra cuenta.
+  AUTHORIZED_EDITOR_EMAIL: "panel.editormp@gmail.com",
 };
 
 // Firebase — proyecto DEV.

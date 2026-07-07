@@ -30,7 +30,13 @@ import {
   orderBy,
   limit,
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
-import { getAuth } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
+import {
+  getAuth,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signOut,
+  onAuthStateChanged,
+} from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
 
 const config = window.PANEL_FIREBASE_CONFIG;
 if (!config || !config.projectId) {
@@ -78,7 +84,22 @@ if (!config || !config.projectId) {
       // Historial "Últimos cambios" en Firestore (Fase 1.3e).
       appendHistoryEntryToFirestore,
       listenToHistoryEntries,
+      // Firebase Auth — necesario para las Security Rules restrictivas (Fase 1.4).
+      signInPanelUser,
+      signOutPanelUser,
+      onAuthChanged,
+      getCurrentAuthUser,
     };
+
+    // Notificar cambios de sesión al resto del panel.
+    onAuthStateChanged(auth, (user) => {
+      document.dispatchEvent(new CustomEvent("firebase:auth-changed", { detail: { user } }));
+      if (user) {
+        console.info(`[auth] sesión activa: ${user.email}`);
+      } else {
+        console.info("[auth] sin sesión");
+      }
+    });
 
     console.info(`[firebase] SDK inicializado contra proyecto: ${config.projectId}`);
 
@@ -450,6 +471,72 @@ function listenToCellLocks(onChange, onError, options = {}) {
   );
   console.info("[firestore-locks] suscripción activa a panels/" + panelId + "/locks");
   return unsub;
+}
+
+// =============================================================================
+// FIREBASE AUTH — Fase 1.4
+//
+// Añade una segunda capa de sesión (independiente del OAuth de Drive) contra
+// Firebase Auth con proveedor Google. Es la que consumen las Security Rules
+// para permitir/denegar writes en Firestore.
+//
+// Diseño: cuenta compartida (panel.editormp@gmail.com). Las Rules validan
+// el email; cualquier otro usuario recibe permission-denied al escribir.
+//
+// El editor llama a signInPanelUser() cuando ha completado la autenticación
+// de Drive. Como el usuario ya está firmado en Google, el popup suele ser
+// silencioso o mínimo (Google ofrece la cuenta ya elegida). En sesiones
+// posteriores, la sesión Firebase queda cacheada en el navegador y ni
+// siquiera pide popup.
+// =============================================================================
+
+const googleAuthProvider = (() => {
+  const p = new GoogleAuthProvider();
+  // Muestra el selector de cuenta si hay más de una (útil para no coger la
+  // cuenta personal por defecto).
+  p.setCustomParameters({ prompt: "select_account" });
+  return p;
+})();
+
+async function signInPanelUser() {
+  if (!window.PanelFirebase?.auth) {
+    console.error("[auth] Firebase no está inicializado");
+    return null;
+  }
+  const auth = window.PanelFirebase.auth;
+  // Ya hay sesión previa cacheada — no molestar al usuario.
+  if (auth.currentUser) return auth.currentUser;
+  try {
+    const result = await signInWithPopup(auth, googleAuthProvider);
+    return result.user;
+  } catch (err) {
+    // Casos típicos:
+    //   auth/popup-closed-by-user   → el usuario cerró el popup
+    //   auth/popup-blocked          → bloqueador de popups activo
+    //   auth/operation-not-allowed  → Google provider no está habilitado en la Console
+    console.error("[auth] sign-in falló:", err?.code || err);
+    return null;
+  }
+}
+
+async function signOutPanelUser() {
+  if (!window.PanelFirebase?.auth) return false;
+  try {
+    await signOut(window.PanelFirebase.auth);
+    return true;
+  } catch (err) {
+    console.error("[auth] sign-out falló:", err);
+    return false;
+  }
+}
+
+function onAuthChanged(callback) {
+  if (!window.PanelFirebase?.auth || typeof callback !== "function") return () => {};
+  return onAuthStateChanged(window.PanelFirebase.auth, callback);
+}
+
+function getCurrentAuthUser() {
+  return window.PanelFirebase?.auth?.currentUser || null;
 }
 
 // =============================================================================

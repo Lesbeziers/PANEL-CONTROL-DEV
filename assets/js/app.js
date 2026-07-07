@@ -7553,6 +7553,43 @@ function startCellLocksListener() {
   });
 }
 
+// =============================================================================
+// FIREBASE AUTH BOOTSTRAP (Fase 1.4)
+//
+// Se llama tras la firma de Drive OAuth. Intenta silent-signin en Firebase
+// (rápido si el navegador ya tiene sesión); si no hay sesión, abre el popup
+// de Google. Cuando termina, compara el email con el autorizado y avisa por
+// toast si no coincide (aunque las Rules ya lo bloquearán server-side).
+// =============================================================================
+let firebaseAuthEnsureInFlight = false;
+
+async function ensureFirebaseAuthForEditor() {
+  if (firebaseAuthEnsureInFlight) return;
+  if (IS_VIEWER_MODE) return; // El visor no firma.
+  if (!window.PanelFirebase?.signInPanelUser) return;
+
+  const expectedEmail = window.PANEL_CONFIG?.AUTHORIZED_EDITOR_EMAIL;
+  if (!expectedEmail) {
+    console.warn("[auth] AUTHORIZED_EDITOR_EMAIL no configurado — no valido email");
+  }
+
+  firebaseAuthEnsureInFlight = true;
+  try {
+    const user = await window.PanelFirebase.signInPanelUser();
+    if (!user) {
+      console.warn("[auth] no se pudo firmar — el editor funcionará mientras las Rules estén abiertas");
+      showGridToast("No se pudo firmar en Firebase — reintenta desde el badge");
+      return;
+    }
+    if (expectedEmail && user.email !== expectedEmail) {
+      console.warn(`[auth] cuenta incorrecta: ${user.email} (se esperaba ${expectedEmail})`);
+      showGridToast(`⚠️ Cuenta incorrecta (${user.email}). Cierra sesión y usa ${expectedEmail}`);
+    }
+  } finally {
+    firebaseAuthEnsureInFlight = false;
+  }
+}
+
 // Selector de fuente de datos. La rama dev tiene el flag activado; la rama
 // main lo mantendrá desactivado hasta el cutover final.
 function bootInitialLoad() {
@@ -7585,6 +7622,10 @@ function bootInitialLoad() {
       // ensureEditorName() abre el modal "¿Cómo te llamas?" si aún no hay alias.
       try { await ensureEditorName(); } catch (_) { /* opcional */ }
       startPresenceTracking();
+      // Firebase Auth (Fase 1.4). No bloquea el arranque — si falla, el panel
+      // sigue funcionando con las Rules permisivas actuales; cuando cerremos
+      // las Rules, sí será obligatorio.
+      ensureFirebaseAuthForEditor();
     };
 
     if (window.GoogleDrive?.isSignedIn?.()) {
