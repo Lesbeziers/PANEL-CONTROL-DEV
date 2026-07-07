@@ -24,6 +24,7 @@ import {
   serverTimestamp,
   writeBatch,
   onSnapshot,
+  deleteDoc,
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 import { getAuth } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
 
@@ -66,6 +67,10 @@ if (!config || !config.projectId) {
       // Capa de lectura en tiempo real (Fase 1.3c). El panel se suscribe una
       // vez tras el load inicial y recibe callbacks por cada doc que cambia.
       listenToPanelRows,
+      // Locks visuales — quién está editando qué celda (Fase 1.3d).
+      writeCellLock,
+      releaseCellLock,
+      listenToCellLocks,
     };
 
     console.info(`[firebase] SDK inicializado contra proyecto: ${config.projectId}`);
@@ -353,6 +358,84 @@ function listenToPanelRows(onChange, onError, options = {}) {
     }
   );
   console.info("[firestore-live] suscripción activa a panels/" + panelId + "/rows");
+  return unsub;
+}
+
+// =============================================================================
+// CELL LOCKS — Fase 1.3d
+//
+// Cuando un editor entra en modo edición de una celda, crea un lock en
+// `panels/{panelId}/locks/{lockId}` con su alias, sessionId y updatedAt
+// (serverTimestamp). Un heartbeat en cliente reescribe updatedAt cada 10 s
+// mientras la edición sigue activa. Al salir, el cliente borra el doc.
+//
+// Si el cliente muere (crash, cierre brusco), el lock queda huérfano.
+// Como safety net, los consumidores ignoran locks con updatedAt mayor de
+// 30 s — TTL client-side. No se hace enforcement server-side (rules
+// permisivas para dev), solo visual: marco rojo informativo.
+// =============================================================================
+
+const LOCK_SEPARATOR = "__";
+
+function lockIdOf(rowKey, columnKey) {
+  return `${rowKey}${LOCK_SEPARATOR}${columnKey}`;
+}
+
+async function writeCellLock(rowKey, columnKey, options = {}) {
+  const { editor = "anon", sessionId = "unknown", panelId = "main" } = options;
+  if (!window.PanelFirebase?.db || !rowKey || !columnKey) return false;
+  const db = window.PanelFirebase.db;
+  const lockRef = doc(db, "panels", panelId, "locks", lockIdOf(rowKey, columnKey));
+  await setDoc(lockRef, {
+    rowKey,
+    columnKey,
+    editor,
+    sessionId,
+    updatedAt: serverTimestamp(),
+  }, { merge: true });
+  return true;
+}
+
+async function releaseCellLock(rowKey, columnKey, options = {}) {
+  const { panelId = "main" } = options;
+  if (!window.PanelFirebase?.db || !rowKey || !columnKey) return false;
+  const db = window.PanelFirebase.db;
+  const lockRef = doc(db, "panels", panelId, "locks", lockIdOf(rowKey, columnKey));
+  try {
+    await deleteDoc(lockRef);
+    return true;
+  } catch (err) {
+    // Si ya no existe, no pasa nada.
+    return false;
+  }
+}
+
+function listenToCellLocks(onChange, onError, options = {}) {
+  const { panelId = "main" } = options;
+  if (!window.PanelFirebase?.db) return null;
+  const db = window.PanelFirebase.db;
+  const q = collection(db, "panels", panelId, "locks");
+  const unsub = onSnapshot(
+    q,
+    (snap) => {
+      snap.docChanges().forEach((change) => {
+        try {
+          onChange({
+            type: change.type,
+            lockId: change.doc.id,
+            data: change.type === "removed" ? null : change.doc.data(),
+          });
+        } catch (err) {
+          console.error("[firestore-locks] onChange threw:", err);
+        }
+      });
+    },
+    (err) => {
+      console.error("[firestore-locks] snapshot error:", err);
+      if (typeof onError === "function") onError(err);
+    }
+  );
+  console.info("[firestore-locks] suscripción activa a panels/" + panelId + "/locks");
   return unsub;
 }
 

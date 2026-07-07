@@ -5338,6 +5338,7 @@ function attachDateCell(cell, row, columnKey) {
     const cleanup = () => {
       if (editingCell?.cell === cell) {
         editingCell = null;
+        releaseCellLockForEditing(cell);
         flushPendingRemoteRender();
       }
       cell.classList.remove("is-editing");
@@ -5356,6 +5357,7 @@ function attachDateCell(cell, row, columnKey) {
 
     input.addEventListener("blur", commit, { once: true });
 
+    acquireCellLockForEditing(cell);
     editingCell = {
       cell,
       input,
@@ -5454,6 +5456,7 @@ function attachGenreCell(cell, row) {
     const cleanup = () => {
       if (editingCell?.cell === cell) {
         editingCell = null;
+        releaseCellLockForEditing(cell);
         flushPendingRemoteRender();
       }
       document.removeEventListener("mousedown", handlePointerDownOutside);
@@ -5509,6 +5512,7 @@ function attachGenreCell(cell, row) {
     window.addEventListener("resize", positionMenu);
     document.addEventListener("mousedown", handlePointerDownOutside);
 
+    acquireCellLockForEditing(cell);
     editingCell = {
       cell,
       input: menu,
@@ -6195,6 +6199,7 @@ function attachTitleCell(cell, row) {
     const cleanupEditingState = () => {
       if (editingCell?.cell === cell) {
         editingCell = null;
+        releaseCellLockForEditing(cell);
         flushPendingRemoteRender();
       }
       syncFillHandlePosition();
@@ -6230,6 +6235,7 @@ function attachTitleCell(cell, row) {
 
     input.addEventListener("blur", commit, { once: true });
 
+    acquireCellLockForEditing(cell);
     editingCell = {
       cell,
       input,
@@ -6283,6 +6289,7 @@ function attachIdTextCell(cell, row) {
     const cleanup = () => {
       if (editingCell?.cell === cell) {
         editingCell = null;
+        releaseCellLockForEditing(cell);
         flushPendingRemoteRender();
       }
       renderReadMode();
@@ -6300,6 +6307,7 @@ function attachIdTextCell(cell, row) {
 
     input.addEventListener("blur", commit, { once: true });
 
+    acquireCellLockForEditing(cell);
     editingCell = {
       cell,
       input,
@@ -6659,6 +6667,9 @@ leftRow.addEventListener("contextmenu", (event) => openContextMenu(event, blockI
   syncFillHandlePosition();
   syncCopyAntsPosition();
   updateGlobalCollapseButtonState();
+  // Fase 1.3d — el DOM se reconstruye entero en renderRows(); reaplicamos
+  // los overlays de locks remotos para que no desaparezcan.
+  if (typeof repaintAllRemoteLocks === "function") repaintAllRemoteLocks();
 }
 
 function formatDraftTimestamp(ms) {
@@ -6983,6 +6994,8 @@ async function loadPanelFromFirestore() {
     // Arranca el listener en tiempo real (Fase 1.3c). A partir de aquí
     // cualquier cambio hecho por otro editor llega en ~1s.
     startFirestoreRealtimeListener();
+    // Arranca el listener de locks de celda (Fase 1.3d) — marcos rojos.
+    startCellLocksListener();
     return true;
   } catch (err) {
     console.error("[firestore-load] error:", err);
@@ -7204,6 +7217,166 @@ function handleFirestoreRemoteChange({ type, rowKey, data, fromLocal }) {
   renderRows();
   requestAnimationFrame(() => {
     changed.forEach((columnKey) => flashCellUpdate(existing.blockIndex, existing.rowIndex, columnKey));
+  });
+}
+
+// =============================================================================
+// CELL LOCKS (Fase 1.3d)
+//
+// Aviso visual: cuando un editor entra en modo edición de una celda, un doc
+// en `panels/main/locks/{lockId}` la marca como "ocupada". Otros editores
+// pintan la celda con marco rojo. Es AVISO, no bloqueo — la celda sigue
+// siendo editable. Diseño A del check plan.
+//
+// Heartbeat cada 10 s mantiene el lock vivo. Locks con updatedAt > 30 s se
+// consideran huérfanos (crash/cierre brusco) y se ignoran.
+// =============================================================================
+
+const LOCK_HEARTBEAT_MS = 10_000;
+const LOCK_TTL_MS = 30_000;
+const LOCK_SWEEP_INTERVAL_MS = 5_000;
+
+// Locks propios: lockId → { heartbeatTimer, rowKey, columnKey }
+const myActiveCellLocks = new Map();
+// Locks remotos: lockId → { rowKey, columnKey, editor, sessionId, updatedAtMs }
+const remoteCellLocks = new Map();
+let cellLocksUnsub = null;
+let cellLocksSweepTimer = null;
+
+function cellLockIdOf(rowKey, columnKey) {
+  return `${rowKey}__${columnKey}`;
+}
+
+function extractLockCoordsFromCell(cell) {
+  if (!cell) return null;
+  const columnKey = cell.dataset.columnKey;
+  const info = typeof getRowByCell === "function" ? getRowByCell(cell) : null;
+  const rowKey = info?.row?.rowKey;
+  if (!rowKey || !columnKey) return null;
+  return { rowKey, columnKey };
+}
+
+function acquireCellLockForEditing(cell) {
+  if (!isFirestoreSourceActive()) return;
+  if (!window.PanelFirebase?.writeCellLock) return;
+  const coords = extractLockCoordsFromCell(cell);
+  if (!coords) return;
+  const lockId = cellLockIdOf(coords.rowKey, coords.columnKey);
+  if (myActiveCellLocks.has(lockId)) return; // Ya poseemos este lock.
+
+  const write = () => window.PanelFirebase.writeCellLock(coords.rowKey, coords.columnKey, {
+    editor: editorName || "anon",
+    sessionId: PRESENCE_SESSION_ID,
+  }).catch((err) => console.error("[cell-lock] write error:", err));
+
+  write(); // primera escritura
+  const timer = setInterval(write, LOCK_HEARTBEAT_MS);
+  myActiveCellLocks.set(lockId, { heartbeatTimer: timer, rowKey: coords.rowKey, columnKey: coords.columnKey });
+}
+
+function releaseCellLockForEditing(cell) {
+  if (!window.PanelFirebase?.releaseCellLock) return;
+  const coords = extractLockCoordsFromCell(cell);
+  if (!coords) return;
+  const lockId = cellLockIdOf(coords.rowKey, coords.columnKey);
+  const state = myActiveCellLocks.get(lockId);
+  if (state) {
+    clearInterval(state.heartbeatTimer);
+    myActiveCellLocks.delete(lockId);
+  }
+  // Borrar el doc en Firestore (fire-and-forget — si falla, el TTL lo limpia).
+  window.PanelFirebase.releaseCellLock(coords.rowKey, coords.columnKey)
+    .catch((err) => console.error("[cell-lock] release error:", err));
+}
+
+function paintCellLockOverlay(rowKey, columnKey, editor) {
+  const loc = findRowLocationByKey(rowKey);
+  if (!loc) return;
+  const cell = document.querySelector(
+    `[data-block-index="${loc.blockIndex}"][data-row-index="${loc.rowIndex}"][data-column-key="${columnKey}"]`
+  );
+  if (!cell) return;
+  cell.classList.add("cell-remote-lock");
+  cell.setAttribute("title", `Editando: ${editor || "otro editor"}`);
+}
+
+function clearCellLockOverlay(rowKey, columnKey) {
+  const loc = findRowLocationByKey(rowKey);
+  if (!loc) return;
+  const cell = document.querySelector(
+    `[data-block-index="${loc.blockIndex}"][data-row-index="${loc.rowIndex}"][data-column-key="${columnKey}"]`
+  );
+  if (!cell) return;
+  cell.classList.remove("cell-remote-lock");
+  cell.removeAttribute("title");
+}
+
+function isLockFresh(lockState) {
+  if (!lockState || !Number.isFinite(lockState.updatedAtMs)) return false;
+  return (Date.now() - lockState.updatedAtMs) <= LOCK_TTL_MS;
+}
+
+function handleRemoteCellLockChange({ type, lockId, data }) {
+  if (type === "removed") {
+    const prev = remoteCellLocks.get(lockId);
+    remoteCellLocks.delete(lockId);
+    if (prev) clearCellLockOverlay(prev.rowKey, prev.columnKey);
+    return;
+  }
+  if (!data) return;
+  const { rowKey, columnKey, editor, sessionId, updatedAt } = data;
+  // Ignora locks propios (nosotros ya pintamos nuestro <input>, no queremos
+  // vernos rojos).
+  if (sessionId === PRESENCE_SESSION_ID) return;
+  const updatedAtMs = updatedAt?.toMillis?.() ?? null;
+  const state = { rowKey, columnKey, editor, sessionId, updatedAtMs };
+  remoteCellLocks.set(lockId, state);
+  if (isLockFresh(state)) {
+    paintCellLockOverlay(rowKey, columnKey, editor);
+  } else {
+    clearCellLockOverlay(rowKey, columnKey);
+  }
+}
+
+function repaintAllRemoteLocks() {
+  // Se llama al final de renderRows() — el DOM se ha reconstruido y hay que
+  // reaplicar todos los overlays a los cells vigentes.
+  remoteCellLocks.forEach((state) => {
+    if (isLockFresh(state)) {
+      paintCellLockOverlay(state.rowKey, state.columnKey, state.editor);
+    }
+  });
+}
+
+function sweepExpiredCellLocks() {
+  // Barre locks huérfanos: si el updatedAt es viejo, quitamos el marco rojo
+  // aunque el doc siga en Firestore. Cuando el heartbeat vuelva a llegar (si
+  // es que llega), se repintará automáticamente vía handleRemoteCellLockChange.
+  remoteCellLocks.forEach((state, lockId) => {
+    if (!isLockFresh(state)) {
+      clearCellLockOverlay(state.rowKey, state.columnKey);
+    }
+  });
+}
+
+function startCellLocksListener() {
+  if (!isFirestoreSourceActive()) return;
+  if (cellLocksUnsub) return;
+  if (!window.PanelFirebase?.listenToCellLocks) return;
+  cellLocksUnsub = window.PanelFirebase.listenToCellLocks(
+    handleRemoteCellLockChange,
+    (err) => console.error("[cell-lock] listener error:", err)
+  );
+  cellLocksSweepTimer = setInterval(sweepExpiredCellLocks, LOCK_SWEEP_INTERVAL_MS);
+
+  // Best-effort limpieza de nuestros locks al cerrar. Firestore no garantiza
+  // que el request llegue, pero es un intento. El TTL de 30 s cubre el fallo.
+  window.addEventListener("beforeunload", () => {
+    myActiveCellLocks.forEach((state) => {
+      try {
+        window.PanelFirebase.releaseCellLock(state.rowKey, state.columnKey);
+      } catch (_) { /* ignore */ }
+    });
   });
 }
 

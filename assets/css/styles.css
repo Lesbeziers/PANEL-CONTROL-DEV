@@ -1802,3 +1802,25 @@ body {
 .cell-remote-flash {
   animation: cellRemoteFlash 700ms ease-out;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Fase 1.3d — otra sesión está editando esta celda (aviso visual, no bloqueo). */
+/* Marco rojo por dentro, tooltip nativo con el nombre del editor.              */
+/* -------------------------------------------------------------------------- */
+.cell-remote-lock {
+  box-shadow: inset 0 0 0 2px #d94848;
+  cursor: help;
+  position: relative;
+}
+.cell-remote-lock::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #d94848;
+  pointer-events: none;
+  z-index: 2;
+}
