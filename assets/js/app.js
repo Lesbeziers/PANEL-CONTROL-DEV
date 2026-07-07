@@ -7345,9 +7345,18 @@ function handleFirestoreRemoteChange({ type, rowKey, data, fromLocal }) {
 const LOCK_HEARTBEAT_MS = 10_000;
 const LOCK_TTL_MS = 30_000;
 const LOCK_SWEEP_INTERVAL_MS = 5_000;
+// Si el usuario no interactúa (teclado / ratón) durante este tiempo mientras
+// tiene una celda abierta, el heartbeat deja de reescribir y el lock cae por
+// TTL en 30 s. Evita que un editor que se olvide una pestaña abierta bloquee
+// visualmente esa celda para siempre.
+const LOCK_IDLE_TIMEOUT_MS = 3 * 60 * 1000;
 
 // Locks propios: lockId → { heartbeatTimer, rowKey, columnKey }
 const myActiveCellLocks = new Map();
+// Momento de la última actividad detectada del usuario. Se refresca en cada
+// tecla o movimiento del ratón mientras haya un lock activo.
+let lastEditingActivityMs = 0;
+let activityListenersAttached = false;
 // Locks remotos: lockId → { rowKey, columnKey, editor, sessionId, updatedAtMs }
 const remoteCellLocks = new Map();
 let cellLocksUnsub = null;
@@ -7366,6 +7375,18 @@ function extractLockCoordsFromCell(cell) {
   return { rowKey, columnKey };
 }
 
+function ensureLockActivityListeners() {
+  if (activityListenersAttached) return;
+  activityListenersAttached = true;
+  const bump = () => {
+    if (myActiveCellLocks.size > 0) lastEditingActivityMs = Date.now();
+  };
+  // Pasivos y en captura para no interferir con el resto de handlers.
+  document.addEventListener("keydown", bump, { capture: true, passive: true });
+  document.addEventListener("pointermove", bump, { capture: true, passive: true });
+  document.addEventListener("pointerdown", bump, { capture: true, passive: true });
+}
+
 function acquireCellLockForEditing(cell) {
   if (!isFirestoreSourceActive()) return;
   if (!window.PanelFirebase?.writeCellLock) return;
@@ -7374,10 +7395,32 @@ function acquireCellLockForEditing(cell) {
   const lockId = cellLockIdOf(coords.rowKey, coords.columnKey);
   if (myActiveCellLocks.has(lockId)) return; // Ya poseemos este lock.
 
-  const write = () => window.PanelFirebase.writeCellLock(coords.rowKey, coords.columnKey, {
-    editor: editorName || "anon",
-    sessionId: PRESENCE_SESSION_ID,
-  }).catch((err) => console.error("[cell-lock] write error:", err));
+  ensureLockActivityListeners();
+  lastEditingActivityMs = Date.now();
+
+  const write = async () => {
+    const state = myActiveCellLocks.get(lockId);
+    if (!state) return;
+    // Si el usuario lleva un rato inactivo, autoreleasamos: paramos el
+    // heartbeat, borramos el doc (para no esperar los 30 s de TTL) y salimos.
+    if (Date.now() - lastEditingActivityMs > LOCK_IDLE_TIMEOUT_MS) {
+      clearInterval(state.heartbeatTimer);
+      myActiveCellLocks.delete(lockId);
+      try {
+        await window.PanelFirebase.releaseCellLock(coords.rowKey, coords.columnKey);
+      } catch (_) { /* si falla, el TTL lo cubre en 30 s */ }
+      console.info(`[cell-lock] auto-release por inactividad: ${lockId}`);
+      return;
+    }
+    try {
+      await window.PanelFirebase.writeCellLock(coords.rowKey, coords.columnKey, {
+        editor: editorName || "anon",
+        sessionId: PRESENCE_SESSION_ID,
+      });
+    } catch (err) {
+      console.error("[cell-lock] write error:", err);
+    }
+  };
 
   write(); // primera escritura
   const timer = setInterval(write, LOCK_HEARTBEAT_MS);
