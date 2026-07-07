@@ -2801,6 +2801,14 @@ async function ensureHistoryFile() {
 }
 
 async function loadHistory() {
+  // Fase 1.3e: cuando Firestore es la fuente, el historial vive en la
+  // colección panels/main/history y se mantiene actualizado en tiempo real
+  // por el listener startFirestoreHistoryListener(). No leemos del JSON de
+  // Drive (contiene entradas antiguas que machacarían el estado bueno).
+  if (window.PANEL_CONFIG?.USE_FIRESTORE_AS_SOURCE) {
+    if (historyPanelOpen) renderHistoryPanelContents();
+    return;
+  }
   if (historyLoading) return;
   historyLoading = true;
   try {
