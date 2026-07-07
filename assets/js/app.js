@@ -3170,8 +3170,21 @@ function flashRowInCurrentView(rowKey) {
   const leftBody = document.getElementById("left-body");
   const rightBody = document.getElementById("right-body");
   if (!leftBody || !rightBody) return false;
-  const target = leftBody.querySelector(`[data-row-id="${CSS.escape(rowKey)}"]`);
-  if (!target) return false;
+
+  let target = leftBody.querySelector(`[data-row-id="${CSS.escape(rowKey)}"]`);
+
+  // Fila no está en DOM. ¿Existe en memoria pero su bloque está colapsado?
+  if (!target) {
+    const loc = typeof findRowLocationByKey === "function" ? findRowLocationByKey(rowKey) : null;
+    if (loc?.block?.collapsed) {
+      // Expandir el bloque, re-renderizar y reintentar.
+      blocks[loc.blockIndex] = { ...loc.block, collapsed: false };
+      renderRows();
+      target = leftBody.querySelector(`[data-row-id="${CSS.escape(rowKey)}"]`);
+    }
+    if (!target) return false;
+  }
+
   const leftRow = target.closest(".left-row");
   if (!leftRow) return false;
   leftRow.scrollIntoView({ behavior: "smooth", block: "center" });
