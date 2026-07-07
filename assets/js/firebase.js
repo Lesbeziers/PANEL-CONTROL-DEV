@@ -176,7 +176,7 @@ async function migrateBlocksToFirestore(blocks, options = {}) {
         startDateISO: row.startDateISO || "",
         endDateText: row.endDateText || "",
         endDateISO: row.endDateISO || "",
-        listoByMonth: row.listoByMonth || {},
+        listoByMonth: Object.keys(row.listoByMonth || {}).filter((k) => row.listoByMonth[k]),
         actualizado: !!row.actualizado,
         homeMonth: Number.isInteger(row.homeMonth) ? row.homeMonth : null,
         homeYear: Number.isInteger(row.homeYear) ? row.homeYear : null,
@@ -240,6 +240,12 @@ async function writeRowToFirestore(blockId, row, options = {}) {
     return false;
   }
   const db = window.PanelFirebase.db;
+  // listoByMonth se guarda como ARRAY de meses activos (no como map).
+  // Motivo: setDoc({merge:true}) hace merge PROFUNDO en maps — enviar {} para
+  // "borrar todo" no borra nada, se preservan las claves anteriores. Los
+  // arrays sí se reemplazan wholesale con merge:true.
+  const listoByMonthArray = Object.keys(row.listoByMonth || {})
+    .filter((k) => row.listoByMonth[k]);
   const payload = {
     blockId,
     title: row.title || "",
@@ -249,7 +255,7 @@ async function writeRowToFirestore(blockId, row, options = {}) {
     startDateISO: row.startDateISO || "",
     endDateText: row.endDateText || "",
     endDateISO: row.endDateISO || "",
-    listoByMonth: row.listoByMonth || {},
+    listoByMonth: listoByMonthArray,
     actualizado: !!row.actualizado,
     homeMonth: Number.isInteger(row.homeMonth) ? row.homeMonth : null,
     homeYear: Number.isInteger(row.homeYear) ? row.homeYear : null,

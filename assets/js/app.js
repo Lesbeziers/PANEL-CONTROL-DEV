@@ -7025,7 +7025,7 @@ async function loadPanelFromFirestore() {
         endDateISO: data.endDateISO || "",
         endDateError: null,
         dateRangeError: null,
-        listoByMonth: data.listoByMonth || {},
+        listoByMonth: decodeListoByMonth(data.listoByMonth),
         actualizado: !!data.actualizado,
         homeMonth: Number.isInteger(data.homeMonth) ? data.homeMonth : DEFAULT_CALENDAR_CONTEXT.month,
         homeYear: Number.isInteger(data.homeYear) ? data.homeYear : DEFAULT_CALENDAR_CONTEXT.year,
@@ -7153,6 +7153,22 @@ function buildHistoryRowMeta(row, block) {
   };
 }
 
+// Firestore serializa listoByMonth como ARRAY de months activos (ver comentario
+// en firebase.js). Este helper lo convierte al shape interno del panel
+// (map { monthKey: true }) sin importar cómo esté guardado en Firestore:
+//   - array (nuevo, correcto): ["2026-07"]                → { "2026-07": true }
+//   - map (legacy, migración): { "2026-07": true }        → { "2026-07": true }
+//   - null/undefined                                      → {}
+function decodeListoByMonth(raw) {
+  if (Array.isArray(raw)) {
+    const out = {};
+    raw.forEach((k) => { if (k) out[k] = true; });
+    return out;
+  }
+  if (raw && typeof raw === "object") return { ...raw };
+  return {};
+}
+
 function findRowLocationByKey(rowKey) {
   for (let b = 0; b < blocks.length; b += 1) {
     const block = blocks[b];
@@ -7187,7 +7203,7 @@ function firestoreDocToRow(rowKey, data, blockType) {
     endDateISO: data.endDateISO || "",
     endDateError: null,
     dateRangeError: null,
-    listoByMonth: data.listoByMonth || {},
+    listoByMonth: decodeListoByMonth(data.listoByMonth),
     actualizado: !!data.actualizado,
     homeMonth: Number.isInteger(data.homeMonth) ? data.homeMonth : DEFAULT_CALENDAR_CONTEXT.month,
     homeYear: Number.isInteger(data.homeYear) ? data.homeYear : DEFAULT_CALENDAR_CONTEXT.year,
