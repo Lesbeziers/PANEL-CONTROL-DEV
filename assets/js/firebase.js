@@ -25,6 +25,10 @@ import {
   writeBatch,
   onSnapshot,
   deleteDoc,
+  addDoc,
+  query,
+  orderBy,
+  limit,
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 import { getAuth } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
 
@@ -71,6 +75,9 @@ if (!config || !config.projectId) {
       writeCellLock,
       releaseCellLock,
       listenToCellLocks,
+      // Historial "Últimos cambios" en Firestore (Fase 1.3e).
+      appendHistoryEntryToFirestore,
+      listenToHistoryEntries,
     };
 
     console.info(`[firebase] SDK inicializado contra proyecto: ${config.projectId}`);
@@ -436,6 +443,71 @@ function listenToCellLocks(onChange, onError, options = {}) {
     }
   );
   console.info("[firestore-locks] suscripción activa a panels/" + panelId + "/locks");
+  return unsub;
+}
+
+// =============================================================================
+// HISTORY LOG — Fase 1.3e
+//
+// Cada mutación (edit, insert, delete, toggle) añade un doc a
+// `panels/{panelId}/history`. El panel lateral "Últimos cambios" se suscribe
+// a esa colección y se refresca en tiempo real.
+//
+// Se guarda un `atLocalMs` (Date.now del cliente) como fallback para pintar
+// el "hace X min" inmediatamente sin esperar a que el servidor confirme el
+// serverTimestamp. Cuando el server confirma, `at` es la fuente oficial.
+// =============================================================================
+
+async function appendHistoryEntryToFirestore(entry, options = {}) {
+  const { panelId = "main" } = options;
+  if (!window.PanelFirebase?.db || !entry) return null;
+  const db = window.PanelFirebase.db;
+  try {
+    const ref = collection(db, "panels", panelId, "history");
+    const docRef = await addDoc(ref, {
+      ...entry,
+      at: serverTimestamp(),
+      atLocalMs: Date.now(),
+    });
+    return docRef.id;
+  } catch (err) {
+    console.error("[history] append error:", err);
+    return null;
+  }
+}
+
+function listenToHistoryEntries(onChange, onError, options = {}) {
+  const { panelId = "main", limitN = 200 } = options;
+  if (!window.PanelFirebase?.db) return null;
+  const db = window.PanelFirebase.db;
+  const q = query(
+    collection(db, "panels", panelId, "history"),
+    orderBy("atLocalMs", "desc"),
+    limit(limitN)
+  );
+  const unsub = onSnapshot(
+    q,
+    (snap) => {
+      const entries = [];
+      snap.forEach((docSnap) => {
+        const data = docSnap.data();
+        entries.push({
+          _id: docSnap.id,
+          ...data,
+          // ts como ISO string — el resto del panel espera ese formato.
+          ts: data.at?.toDate?.().toISOString?.() ||
+              (Number.isFinite(data.atLocalMs) ? new Date(data.atLocalMs).toISOString() : ""),
+        });
+      });
+      try { onChange(entries); }
+      catch (err) { console.error("[history] onChange threw:", err); }
+    },
+    (err) => {
+      console.error("[history] snapshot error:", err);
+      if (typeof onError === "function") onError(err);
+    }
+  );
+  console.info("[history] suscripción activa a panels/" + panelId + "/history");
   return unsub;
 }
 

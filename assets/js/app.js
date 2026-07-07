@@ -3972,6 +3972,14 @@ function setCellValue(cell, rawValue, historyOptions = {}) {
     // Ignora placeholders y no-op si el flag está en false.
     const blockId = blocks[meta.blockIndex]?.id;
     if (blockId) scheduleFirestoreRowSync(row, blockId);
+    // Registrar en historial (Fase 1.3e).
+    logMutationToHistory({
+      ...buildHistoryRowMeta(row, blocks[meta.blockIndex]),
+      kind: "cell",
+      column: meta.columnKey,
+      before: formatHistoryValue(before),
+      after: formatHistoryValue(after),
+    });
   }
 
   return { row, meta };
@@ -5569,6 +5577,11 @@ function insertRows(blockIndex, atIndex, count = 1, options = {}) {
       }
       await flushFirestoreOrderResync(blockId, blocks[blockIndex].rows);
     })();
+    // Historial (Fase 1.3e).
+    rowsToInsert.forEach((r) => logMutationToHistory({
+      ...buildHistoryRowMeta(r, block),
+      kind: "add",
+    }));
   }
 
   if (options.render !== false) {
@@ -5630,6 +5643,14 @@ function deleteRowsInBlock(blockIndex, startRow, endRow, options = {}) {
       }
       await flushFirestoreOrderResync(blockId, blocks[blockIndex].rows);
     })();
+    // Historial (Fase 1.3e).
+    removedRows.forEach((r) => {
+      if (!r?.rowKey || r._autoPlaceholder) return;
+      logMutationToHistory({
+        ...buildHistoryRowMeta(r, block),
+        kind: "delete",
+      });
+    });
   }
 
   return {
@@ -5865,9 +5886,18 @@ function toggleRowActualizado(blockIndex, rowIndex) {
   if (!row || row._autoPlaceholder) {
     return;
   }
+  const before = row.actualizado;
   row.actualizado = !row.actualizado;
   // Persistir en Firestore (Fase 1.3b)
   scheduleFirestoreRowSync(row, block.id);
+  // Registrar en historial (Fase 1.3e).
+  logMutationToHistory({
+    ...buildHistoryRowMeta(row, block),
+    kind: "cell",
+    column: "actualizado",
+    before: before ? "sí" : "no",
+    after: row.actualizado ? "sí" : "no",
+  });
   renderRows();
 }
 
@@ -6056,6 +6086,14 @@ function attachBlockListoCheckbox(cell, block) {
           setRowListo(row, targetValue);
           // Persistir en Firestore (Fase 1.3b) — cada fila afectada individualmente.
           scheduleFirestoreRowSync(row, block.id);
+          // Registrar en historial (Fase 1.3e).
+          logMutationToHistory({
+            ...buildHistoryRowMeta(row, block),
+            kind: "cell",
+            column: "listo",
+            before,
+            after,
+          });
         }
       });
       renderRows();
@@ -6996,6 +7034,8 @@ async function loadPanelFromFirestore() {
     startFirestoreRealtimeListener();
     // Arranca el listener de locks de celda (Fase 1.3d) — marcos rojos.
     startCellLocksListener();
+    // Arranca el listener del historial "Últimos cambios" (Fase 1.3e).
+    startFirestoreHistoryListener();
     return true;
   } catch (err) {
     console.error("[firestore-load] error:", err);
@@ -7041,6 +7081,48 @@ function startFirestoreRealtimeListener() {
     handleFirestoreRemoteChange,
     (err) => console.error("[firestore-live] listener error:", err)
   );
+}
+
+// -------- Historial en Firestore (Fase 1.3e) ----------------------------------
+let firestoreHistoryUnsub = null;
+
+function startFirestoreHistoryListener() {
+  if (!isFirestoreSourceActive() || IS_VIEWER_MODE) return;
+  if (firestoreHistoryUnsub) return;
+  if (!window.PanelFirebase?.listenToHistoryEntries) return;
+  firestoreHistoryUnsub = window.PanelFirebase.listenToHistoryEntries((entries) => {
+    historyEntries = entries;
+    historyLoaded = true;
+    if (historyPanelOpen && typeof renderHistoryPanelContents === "function") {
+      renderHistoryPanelContents();
+    }
+  }, (err) => console.error("[history] listener error:", err));
+}
+
+// Añade una entrada al historial en Firestore. No-op si el flag está en false.
+// Los llamadores le pasan un objeto con la forma que ya consume el panel:
+// { kind, editor, rowKey, rowTitle, blockType, monthLabel, homeMonth, homeYear,
+//   column?, before?, after? }.
+function logMutationToHistory(entry) {
+  if (!isFirestoreSourceActive() || IS_VIEWER_MODE) return;
+  if (!window.PanelFirebase?.appendHistoryEntryToFirestore) return;
+  window.PanelFirebase.appendHistoryEntryToFirestore(entry)
+    .catch((err) => console.error("[history] append error:", err));
+}
+
+// Helper: construye la parte de metadata común (editor, blockType, monthLabel,
+// etc.) a partir de una row y su blockIndex.
+function buildHistoryRowMeta(row, block) {
+  return {
+    editor: editorName || "Anónimo",
+    rowKey: row?.rowKey || "",
+    rowTitle: row?.title || "",
+    blockType: block?.blockType || "",
+    monthLabel: (typeof formatHomeMonthLabel === "function")
+      ? formatHomeMonthLabel(row?.homeMonth, row?.homeYear) : "",
+    homeMonth: row?.homeMonth ?? null,
+    homeYear: row?.homeYear ?? null,
+  };
 }
 
 function findRowLocationByKey(rowKey) {
@@ -7404,15 +7486,14 @@ function bootInitialLoad() {
       return;
     }
 
-    // Tras firmar en Drive: cargar Firestore + arrancar identidad/presencia/historial.
+    // Tras firmar en Drive: cargar Firestore + arrancar identidad/presencia.
+    // El historial ya no se carga desde Drive — su listener Firestore lo
+    // suscribe dentro de loadPanelFromFirestore (Fase 1.3e).
     const startEditorSideEffects = async () => {
       startFirestoreData();
       // ensureEditorName() abre el modal "¿Cómo te llamas?" si aún no hay alias.
       try { await ensureEditorName(); } catch (_) { /* opcional */ }
       startPresenceTracking();
-      if (typeof loadHistory === "function") {
-        loadHistory().catch(() => { /* handled inside */ });
-      }
     };
 
     if (window.GoogleDrive?.isSignedIn?.()) {
