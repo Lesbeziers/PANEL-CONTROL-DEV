@@ -7386,11 +7386,50 @@ function bootInitialLoad() {
   const useFirestore = window.PANEL_CONFIG?.USE_FIRESTORE_AS_SOURCE === true;
 
   if (useFirestore) {
-    // Firebase se inicializa como módulo aparte, puede no estar listo aún.
-    if (window.PanelFirebase?.db) {
-      loadPanelFromFirestore();
+    // Rama Firestore. Los datos vienen de Firestore, pero seguimos usando
+    // Google Drive para: (1) identidad (login de la cuenta compartida),
+    // (2) presencia entre editores, (3) historial "Últimos cambios". Todo eso
+    // se irá migrando en fases posteriores.
+    const startFirestoreData = () => {
+      if (window.PanelFirebase?.db) {
+        loadPanelFromFirestore();
+      } else {
+        document.addEventListener("firebase:ready", () => loadPanelFromFirestore(), { once: true });
+      }
+    };
+
+    // El visor no necesita OAuth — lectura pública.
+    if (IS_VIEWER_MODE) {
+      startFirestoreData();
+      return;
+    }
+
+    // Tras firmar en Drive: cargar Firestore + arrancar identidad/presencia/historial.
+    const startEditorSideEffects = async () => {
+      startFirestoreData();
+      // ensureEditorName() abre el modal "¿Cómo te llamas?" si aún no hay alias.
+      try { await ensureEditorName(); } catch (_) { /* opcional */ }
+      startPresenceTracking();
+      if (typeof loadHistory === "function") {
+        loadHistory().catch(() => { /* handled inside */ });
+      }
+    };
+
+    if (window.GoogleDrive?.isSignedIn?.()) {
+      startEditorSideEffects();
+      return;
+    }
+    document.addEventListener("gdrive:signedin", startEditorSideEffects, { once: true });
+    if (window.GoogleDrive?.showGate) {
+      window.GoogleDrive.showGate();
     } else {
-      document.addEventListener("firebase:ready", () => loadPanelFromFirestore(), { once: true });
+      const waitInterval = setInterval(() => {
+        if (window.GoogleDrive?.showGate) {
+          clearInterval(waitInterval);
+          window.GoogleDrive.showGate();
+        }
+      }, 100);
+      setTimeout(() => clearInterval(waitInterval), 10000);
     }
     return;
   }
