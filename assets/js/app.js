@@ -7398,13 +7398,18 @@ function acquireCellLockForEditing(cell) {
   ensureLockActivityListeners();
   lastEditingActivityMs = Date.now();
 
+  // Registrar el lock en el mapa ANTES de la primera escritura. Así el guard
+  // interno del write() no lo salta pensando que el lock ya se ha liberado.
+  const lockState = { heartbeatTimer: null, rowKey: coords.rowKey, columnKey: coords.columnKey };
+  myActiveCellLocks.set(lockId, lockState);
+
   const write = async () => {
     const state = myActiveCellLocks.get(lockId);
-    if (!state) return;
+    if (!state) return; // Ya se liberó desde fuera.
     // Si el usuario lleva un rato inactivo, autoreleasamos: paramos el
     // heartbeat, borramos el doc (para no esperar los 30 s de TTL) y salimos.
     if (Date.now() - lastEditingActivityMs > LOCK_IDLE_TIMEOUT_MS) {
-      clearInterval(state.heartbeatTimer);
+      if (state.heartbeatTimer) clearInterval(state.heartbeatTimer);
       myActiveCellLocks.delete(lockId);
       try {
         await window.PanelFirebase.releaseCellLock(coords.rowKey, coords.columnKey);
@@ -7423,8 +7428,7 @@ function acquireCellLockForEditing(cell) {
   };
 
   write(); // primera escritura
-  const timer = setInterval(write, LOCK_HEARTBEAT_MS);
-  myActiveCellLocks.set(lockId, { heartbeatTimer: timer, rowKey: coords.rowKey, columnKey: coords.columnKey });
+  lockState.heartbeatTimer = setInterval(write, LOCK_HEARTBEAT_MS);
 }
 
 function releaseCellLockForEditing(cell) {
