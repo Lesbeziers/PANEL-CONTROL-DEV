@@ -5338,6 +5338,7 @@ function attachDateCell(cell, row, columnKey) {
     const cleanup = () => {
       if (editingCell?.cell === cell) {
         editingCell = null;
+        flushPendingRemoteRender();
       }
       cell.classList.remove("is-editing");
       render();
@@ -5453,6 +5454,7 @@ function attachGenreCell(cell, row) {
     const cleanup = () => {
       if (editingCell?.cell === cell) {
         editingCell = null;
+        flushPendingRemoteRender();
       }
       document.removeEventListener("mousedown", handlePointerDownOutside);
       menu.classList.remove("open");
@@ -6193,6 +6195,7 @@ function attachTitleCell(cell, row) {
     const cleanupEditingState = () => {
       if (editingCell?.cell === cell) {
         editingCell = null;
+        flushPendingRemoteRender();
       }
       syncFillHandlePosition();
     };
@@ -6280,6 +6283,7 @@ function attachIdTextCell(cell, row) {
     const cleanup = () => {
       if (editingCell?.cell === cell) {
         editingCell = null;
+        flushPendingRemoteRender();
       }
       renderReadMode();
       syncFillHandlePosition();
@@ -6975,12 +6979,232 @@ async function loadPanelFromFirestore() {
     // NO llamamos a maybeOfferDraftRecovery aquí — el sistema de borrador
     // local es incompatible con el modelo de Firestore (cada edición ya se
     // persiste al instante). Se retirará en fases posteriores.
+
+    // Arranca el listener en tiempo real (Fase 1.3c). A partir de aquí
+    // cualquier cambio hecho por otro editor llega en ~1s.
+    startFirestoreRealtimeListener();
     return true;
   } catch (err) {
     console.error("[firestore-load] error:", err);
     showGridToast("Error al cargar datos desde Firestore");
     return false;
   }
+}
+
+// =============================================================================
+// FIRESTORE REALTIME LISTENER (Fase 1.3c)
+//
+// Tras el load inicial, nos suscribimos a la colección de filas. Cada cambio
+// hecho por otro editor (o por nosotros mismos rebotando desde el servidor)
+// entra por handleFirestoreRemoteChange. Aplicamos la mutación mínima al
+// estado en memoria y repintamos solo lo necesario. Ecos locales pendientes
+// de confirmar (`fromLocal:true`) se ignoran — nuestro propio setCellValue
+// ya actualizó la pantalla.
+// =============================================================================
+let firestoreRealtimeUnsub = null;
+// Si llega un cambio remoto mientras el usuario está tecleando en una celda,
+// aplicamos el cambio a memoria pero NO llamamos a renderRows() (destruiría
+// el <input> activo). Marcamos que hay un render pendiente y lo lanzamos en
+// cuanto la edición termina (ver flushPendingRemoteRender()).
+let pendingRemoteRender = false;
+let pendingRemoteFlashes = []; // [{ blockIndex, rowIndex, columnKey }]
+
+function flushPendingRemoteRender() {
+  if (!pendingRemoteRender) return;
+  pendingRemoteRender = false;
+  const flashes = pendingRemoteFlashes.slice();
+  pendingRemoteFlashes = [];
+  renderRows();
+  requestAnimationFrame(() => {
+    flashes.forEach((f) => flashCellUpdate(f.blockIndex, f.rowIndex, f.columnKey));
+  });
+}
+
+function startFirestoreRealtimeListener() {
+  if (!isFirestoreSourceActive()) return;
+  if (firestoreRealtimeUnsub) return; // Ya suscrito.
+  if (!window.PanelFirebase?.listenToPanelRows) return;
+  firestoreRealtimeUnsub = window.PanelFirebase.listenToPanelRows(
+    handleFirestoreRemoteChange,
+    (err) => console.error("[firestore-live] listener error:", err)
+  );
+}
+
+function findRowLocationByKey(rowKey) {
+  for (let b = 0; b < blocks.length; b += 1) {
+    const block = blocks[b];
+    if (!block || block.isSeparator || !Array.isArray(block.rows)) continue;
+    for (let r = 0; r < block.rows.length; r += 1) {
+      if (block.rows[r]?.rowKey === rowKey) {
+        return { blockIndex: b, rowIndex: r, block, row: block.rows[r] };
+      }
+    }
+  }
+  return null;
+}
+
+function findBlockById(blockId) {
+  const idx = blocks.findIndex((b) => b?.id === blockId);
+  return idx === -1 ? null : { blockIndex: idx, block: blocks[idx] };
+}
+
+// Convierte un doc de Firestore al shape interno de fila del panel.
+function firestoreDocToRow(rowKey, data, blockType) {
+  return {
+    rowKey,
+    _autoPlaceholder: false,
+    id: data.id || "",
+    blockType,
+    title: data.title || "",
+    genre: data.genre || "",
+    startDateText: data.startDateText || "",
+    startDateISO: data.startDateISO || "",
+    startDateError: null,
+    endDateText: data.endDateText || "",
+    endDateISO: data.endDateISO || "",
+    endDateError: null,
+    dateRangeError: null,
+    listoByMonth: data.listoByMonth || {},
+    actualizado: !!data.actualizado,
+    homeMonth: Number.isInteger(data.homeMonth) ? data.homeMonth : DEFAULT_CALENDAR_CONTEXT.month,
+    homeYear: Number.isInteger(data.homeYear) ? data.homeYear : DEFAULT_CALENDAR_CONTEXT.year,
+  };
+}
+
+// Devuelve true si el usuario está tecleando ahora mismo en esa celda.
+// Se usa para NO pisar su edición en curso cuando llega un cambio remoto
+// del mismo campo. Los otros campos de la fila sí se actualizan.
+function isCellCurrentlyBeingEdited(rowKey, columnKey) {
+  if (!editingCell || !editingCell.cell) return false;
+  const cell = editingCell.cell;
+  if (cell.dataset.columnKey !== columnKey) return false;
+  const info = getRowByCell(cell);
+  return info?.row?.rowKey === rowKey;
+}
+
+function flashCellUpdate(blockIndex, rowIndex, columnKey) {
+  const cell = document.querySelector(
+    `[data-block-index="${blockIndex}"][data-row-index="${rowIndex}"][data-column-key="${columnKey}"]`
+  );
+  if (!cell) return;
+  cell.classList.remove("cell-remote-flash");
+  // Fuerza reflow para reiniciar la animación si ya estaba corriendo.
+  void cell.offsetWidth;
+  cell.classList.add("cell-remote-flash");
+  setTimeout(() => cell.classList.remove("cell-remote-flash"), 700);
+}
+
+function handleFirestoreRemoteChange({ type, rowKey, data, fromLocal }) {
+  // Eco local (nuestro propio write pendiente de confirmar por el servidor).
+  // setCellValue/insertRows/... ya han pintado el cambio en pantalla — no
+  // hay nada que hacer.
+  if (fromLocal) return;
+
+  // -------- REMOVED (hard delete, poco común con nuestro modelo) --------
+  if (type === "removed") {
+    const loc = findRowLocationByKey(rowKey);
+    if (!loc) return;
+    loc.block.rows.splice(loc.rowIndex, 1);
+    if (!loc.block.rows.length) {
+      const fallback = newRowForBlock(loc.block.blockType, currentCalendarContext);
+      fallback._autoPlaceholder = true;
+      loc.block.rows.push(fallback);
+    }
+    if (editingCell) { pendingRemoteRender = true; return; }
+    renderRows();
+    return;
+  }
+
+  // Soft delete llega como "modified" con deleted:true.
+  if (data?.deleted === true) {
+    const loc = findRowLocationByKey(rowKey);
+    if (!loc) return;
+    loc.block.rows.splice(loc.rowIndex, 1);
+    if (!loc.block.rows.length) {
+      const fallback = newRowForBlock(loc.block.blockType, currentCalendarContext);
+      fallback._autoPlaceholder = true;
+      loc.block.rows.push(fallback);
+    }
+    validateAllRowsDateRanges();
+    if (editingCell) { pendingRemoteRender = true; return; }
+    renderRows();
+    return;
+  }
+
+  // -------- ADDED / MODIFIED --------
+  const existing = findRowLocationByKey(rowKey);
+
+  if (!existing) {
+    // Fila nueva creada por otro editor.
+    if (type !== "added") return;
+    const target = findBlockById(data.blockId);
+    if (!target) return;
+    const newR = firestoreDocToRow(rowKey, data, target.block.blockType);
+    const insertAt = Number.isInteger(data.orderIndex)
+      ? Math.min(target.block.rows.length, Math.max(0, data.orderIndex))
+      : target.block.rows.length;
+    // Si el bloque solo tenía un placeholder, lo quitamos primero.
+    if (target.block.rows.length === 1 && target.block.rows[0]?._autoPlaceholder) {
+      target.block.rows = [newR];
+    } else {
+      target.block.rows.splice(insertAt, 0, newR);
+    }
+    validateAllRowsDateRanges();
+    if (editingCell) { pendingRemoteRender = true; return; }
+    renderRows();
+    return;
+  }
+
+  // Fila existente modificada por otro editor.
+  const row = existing.row;
+  const changed = []; // columnKeys que realmente cambiaron para el flash
+  const remoteRow = firestoreDocToRow(rowKey, data, existing.block.blockType);
+
+  // Aplicar campo a campo, respetando la celda que el usuario esté editando
+  // ahora mismo y evitando repaints inútiles si el valor no ha cambiado.
+  // (rowField, domColumnKey) — el DOM usa startDate/endDate como data-column-key.
+  const fields = [
+    ["title", "title"],
+    ["id", "id"],
+    ["genre", "genre"],
+    ["startDateText", "startDate"],
+    ["endDateText", "endDate"],
+    ["actualizado", "actualizado"],
+  ];
+  for (const [rowField, domColumnKey] of fields) {
+    if (row[rowField] === remoteRow[rowField]) continue;
+    if (isCellCurrentlyBeingEdited(rowKey, domColumnKey)) continue;
+    row[rowField] = remoteRow[rowField];
+    changed.push(domColumnKey);
+  }
+  // Fechas: los ISO viajan aparte del texto
+  if (row.startDateISO !== remoteRow.startDateISO) row.startDateISO = remoteRow.startDateISO;
+  if (row.endDateISO !== remoteRow.endDateISO) row.endDateISO = remoteRow.endDateISO;
+
+  // listoByMonth es un objeto — comparo por JSON crudo.
+  if (JSON.stringify(row.listoByMonth) !== JSON.stringify(remoteRow.listoByMonth)) {
+    row.listoByMonth = remoteRow.listoByMonth;
+    changed.push("listo");
+  }
+
+  if (changed.length === 0) return; // Nada que hacer, era self-echo idempotente.
+
+  validateAllRowsDateRanges();
+
+  // Si el usuario está editando ahora mismo, NO tocamos el DOM (destruiría
+  // su <input>). Se aplica en cuanto termine la edición.
+  if (editingCell) {
+    pendingRemoteRender = true;
+    changed.forEach((columnKey) => {
+      pendingRemoteFlashes.push({ blockIndex: existing.blockIndex, rowIndex: existing.rowIndex, columnKey });
+    });
+    return;
+  }
+
+  renderRows();
+  requestAnimationFrame(() => {
+    changed.forEach((columnKey) => flashCellUpdate(existing.blockIndex, existing.rowIndex, columnKey));
+  });
 }
 
 // Selector de fuente de datos. La rama dev tiene el flag activado; la rama

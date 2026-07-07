@@ -1790,3 +1790,15 @@ body {
 .is-viewer-mode .block-toggle-checkbox:not(:checked) {
   visibility: hidden;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Fase 1.3c — flash sutil cuando una celda cambia por un edit remoto.         */
+/* Fondo amarillo suave que se desvanece en 700 ms; no interfiere con edición.  */
+/* -------------------------------------------------------------------------- */
+@keyframes cellRemoteFlash {
+  0%   { background-color: rgba(255, 220, 90, 0.55); }
+  100% { background-color: transparent; }
+}
+.cell-remote-flash {
+  animation: cellRemoteFlash 700ms ease-out;
+}

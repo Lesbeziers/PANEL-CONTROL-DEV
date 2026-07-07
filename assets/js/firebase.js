@@ -23,6 +23,7 @@ import {
   collection,
   serverTimestamp,
   writeBatch,
+  onSnapshot,
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 import { getAuth } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
 
@@ -62,6 +63,9 @@ if (!config || !config.projectId) {
       writeRowToFirestore,
       softDeleteRowInFirestore,
       syncBlockOrderIndicesToFirestore,
+      // Capa de lectura en tiempo real (Fase 1.3c). El panel se suscribe una
+      // vez tras el load inicial y recibe callbacks por cada doc que cambia.
+      listenToPanelRows,
     };
 
     console.info(`[firebase] SDK inicializado contra proyecto: ${config.projectId}`);
@@ -294,6 +298,62 @@ async function syncBlockOrderIndicesToFirestore(blockId, rows, options = {}) {
   if (count === 0) return true;
   await batch.commit();
   return count;
+}
+
+// =============================================================================
+// LIVE READ LAYER — Fase 1.3c
+//
+// Suscripción única a la colección `panels/{panelId}/rows`. Cada vez que un
+// documento cambia (added / modified / removed) — sea por otro editor o por
+// nosotros mismos — se invoca onChange con el evento normalizado. La
+// deduplicación de ecos locales (nuestro propio write rebotando) se hace
+// aquí filtrando `hasPendingWrites`.
+// =============================================================================
+
+/**
+ * Abre una suscripción viva a la colección de filas del panel.
+ *
+ *   onChange({ type, rowKey, data, fromLocal })
+ *     type    → "added" | "modified" | "removed"
+ *     rowKey  → id del documento (rowKey de la fila)
+ *     data    → los campos del documento; null si type === "removed"
+ *     fromLocal → true si es un eco de nuestro propio write pendiente de
+ *                 confirmar por el servidor (útil para ignorar)
+ *
+ * Devuelve la función de desuscripción; llamarla cierra el listener.
+ */
+function listenToPanelRows(onChange, onError, options = {}) {
+  const { panelId = "main" } = options;
+  if (!window.PanelFirebase?.db) {
+    console.error("[firestore-live] Firebase no está inicializado");
+    return null;
+  }
+  const db = window.PanelFirebase.db;
+  const q = collection(db, "panels", panelId, "rows");
+
+  const unsub = onSnapshot(
+    q,
+    (snap) => {
+      snap.docChanges().forEach((change) => {
+        try {
+          onChange({
+            type: change.type,
+            rowKey: change.doc.id,
+            data: change.type === "removed" ? null : change.doc.data(),
+            fromLocal: change.doc.metadata.hasPendingWrites,
+          });
+        } catch (err) {
+          console.error("[firestore-live] onChange threw:", err);
+        }
+      });
+    },
+    (err) => {
+      console.error("[firestore-live] snapshot error:", err);
+      if (typeof onError === "function") onError(err);
+    }
+  );
+  console.info("[firestore-live] suscripción activa a panels/" + panelId + "/rows");
+  return unsub;
 }
 
 /**
