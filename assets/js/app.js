@@ -6979,90 +6979,18 @@ async function loadPanelFromFirestore() {
     console.error("[firestore-load] Firebase no está inicializado");
     return false;
   }
-  const fb = window.PanelFirebase;
-  const { collection, getDocs } = fb.utils;
 
   showGridToast("Cargando datos desde Firestore…");
+  blocks = createDefaultBlocks();
 
-  try {
-    // Reinicia la estructura de bloques con los placeholders por defecto.
-    blocks = createDefaultBlocks();
-
-    const rowsSnap = await getDocs(collection(fb.db, "panels", "main", "rows"));
-
-    // Agrupamos las filas por bloque y respetamos orderIndex para orden
-    // estable — Firestore no garantiza el orden salvo si lo pedimos.
-    const rowsByBlock = new Map();
-    rowsSnap.forEach((docSnap) => {
-      const data = docSnap.data();
-      if (data.deleted) return;
-      const blockId = data.blockId;
-      if (!blockId) return;
-      if (!rowsByBlock.has(blockId)) rowsByBlock.set(blockId, []);
-      rowsByBlock.get(blockId).push({ rowKey: docSnap.id, data });
-    });
-
-    let totalLoaded = 0;
-    blocks.forEach((block) => {
-      if (block.isSeparator) return;
-      const entries = rowsByBlock.get(block.id);
-      if (!entries || !entries.length) return;
-
-      entries.sort((a, b) => (a.data.orderIndex ?? 0) - (b.data.orderIndex ?? 0));
-
-      // Sustituye los placeholders por las filas reales
-      block.rows = entries.map(({ rowKey, data }) => ({
-        rowKey,
-        _autoPlaceholder: false,
-        id: data.id || "",
-        blockType: block.blockType,
-        title: data.title || "",
-        genre: data.genre || "",
-        startDateText: data.startDateText || "",
-        startDateISO: data.startDateISO || "",
-        startDateError: null,
-        endDateText: data.endDateText || "",
-        endDateISO: data.endDateISO || "",
-        endDateError: null,
-        dateRangeError: null,
-        listoByMonth: decodeListoByMonth(data.listoByMonth),
-        actualizado: !!data.actualizado,
-        homeMonth: Number.isInteger(data.homeMonth) ? data.homeMonth : DEFAULT_CALENDAR_CONTEXT.month,
-        homeYear: Number.isInteger(data.homeYear) ? data.homeYear : DEFAULT_CALENDAR_CONTEXT.year,
-      }));
-      totalLoaded += entries.length;
-    });
-
-    // Snapshot de referencia — mantiene compatibilidad con el resto del flujo
-    // que todavía consulta loadedSnapshot (será eliminado cuando reescribamos
-    // la capa de guardado, Fase 1.4).
-    loadedSnapshot = deepCloneBlocks(blocks);
-    initialDriveLoadDone = true;
-
-    validateAllRowsDateRanges();
-    applyCalendarContextToView(document);
-    renderRows();
-
-    showGridToast(`Cargadas ${totalLoaded} filas desde Firestore`);
-    console.info(`[firestore-load] ${totalLoaded} filas cargadas desde panels/main/rows`);
-
-    // NO llamamos a maybeOfferDraftRecovery aquí — el sistema de borrador
-    // local es incompatible con el modelo de Firestore (cada edición ya se
-    // persiste al instante). Se retirará en fases posteriores.
-
-    // Arranca el listener en tiempo real (Fase 1.3c). A partir de aquí
-    // cualquier cambio hecho por otro editor llega en ~1s.
-    startFirestoreRealtimeListener();
-    // Arranca el listener de locks de celda (Fase 1.3d) — marcos rojos.
-    startCellLocksListener();
-    // Arranca el listener del historial "Últimos cambios" (Fase 1.3e).
-    startFirestoreHistoryListener();
-    return true;
-  } catch (err) {
-    console.error("[firestore-load] error:", err);
-    showGridToast("Error al cargar datos desde Firestore");
-    return false;
-  }
+  // FASE 2 opt: eliminamos el getDocs inicial. El listener onSnapshot que
+  // arrancamos abajo dispara su primer evento con TODAS las filas como
+  // "added" — eso mismo hace de load inicial. Antes hacíamos ambas cosas y
+  // pagábamos ~2× lecturas por sesión. Ahora solo una.
+  startFirestoreRealtimeListener();
+  startCellLocksListener();
+  startFirestoreHistoryListener();
+  return true;
 }
 
 // =============================================================================
@@ -7099,7 +7027,7 @@ function startFirestoreRealtimeListener() {
   if (firestoreRealtimeUnsub) return; // Ya suscrito.
   if (!window.PanelFirebase?.listenToPanelRows) return;
   firestoreRealtimeUnsub = window.PanelFirebase.listenToPanelRows(
-    handleFirestoreRemoteChange,
+    handleFirestoreSnapshotBatch,
     (err) => console.error("[firestore-live] listener error:", err)
   );
 }
@@ -7233,7 +7161,63 @@ function flashCellUpdate(blockIndex, rowIndex, columnKey) {
   setTimeout(() => cell.classList.remove("cell-remote-flash"), 700);
 }
 
-function handleFirestoreRemoteChange({ type, rowKey, data, fromLocal }) {
+// -----------------------------------------------------------------------------
+// Handler del batch entero (Fase 1.3c + optimización lecturas).
+//
+// El primer snapshot equivale al "load inicial" — trae todas las filas como
+// "added". Lo tratamos aparte: agrupamos por bloque, ordenamos por orderIndex,
+// y hacemos UN renderRows() al final en vez de N (uno por fila). Ahorra
+// tanto lecturas como pintadas.
+//
+// Los snapshots posteriores traen 1-2 cambios normalmente; se procesan cada
+// uno por separado como antes (con flash, defer si el usuario está editando,
+// etc.).
+// -----------------------------------------------------------------------------
+function handleFirestoreSnapshotBatch({ isInitial, changes }) {
+  if (isInitial) {
+    applyInitialFirestoreSnapshot(changes);
+    return;
+  }
+  changes.forEach(applyLiveRowChange);
+}
+
+function applyInitialFirestoreSnapshot(changes) {
+  const rowsByBlock = new Map();
+  changes.forEach(({ type, rowKey, data, fromLocal }) => {
+    // En el snapshot inicial esperamos SOLO "added". Ignoramos otros tipos y
+    // los docs marcados como deleted:true.
+    if (fromLocal) return;
+    if (type === "removed") return;
+    if (!data || data.deleted === true) return;
+    const blockId = data.blockId;
+    if (!blockId) return;
+    if (!rowsByBlock.has(blockId)) rowsByBlock.set(blockId, []);
+    rowsByBlock.get(blockId).push({ rowKey, data });
+  });
+
+  let totalLoaded = 0;
+  blocks.forEach((block) => {
+    if (block.isSeparator) return;
+    const entries = rowsByBlock.get(block.id);
+    if (!entries || !entries.length) return;
+    entries.sort((a, b) => (a.data.orderIndex ?? 0) - (b.data.orderIndex ?? 0));
+    block.rows = entries.map(({ rowKey, data }) => firestoreDocToRow(rowKey, data, block.blockType));
+    totalLoaded += entries.length;
+  });
+
+  // Compatibilidad con el resto del flujo (será limpiado en Fase 2).
+  loadedSnapshot = deepCloneBlocks(blocks);
+  initialDriveLoadDone = true;
+
+  validateAllRowsDateRanges();
+  applyCalendarContextToView(document);
+  renderRows();
+
+  showGridToast(`Cargadas ${totalLoaded} filas desde Firestore`);
+  console.info(`[firestore-load] ${totalLoaded} filas cargadas (snapshot inicial, sin getDocs)`);
+}
+
+function applyLiveRowChange({ type, rowKey, data, fromLocal }) {
   // Eco local (nuestro propio write pendiente de confirmar por el servidor).
   // setCellValue/insertRows/... ya han pintado el cambio en pantalla — no
   // hay nada que hacer.
