@@ -2345,7 +2345,28 @@ const PRESENCE_STALE_MS = 60_000;
 // Slightly more lenient than presence staleness because saves take a few
 // seconds and we want the lock to hold for the full operation.
 const PRESENCE_SAVING_FLAG_MAX_AGE_S = 25;
-const EDITOR_NAME_STORAGE_KEY = `panelControlEditorName:${window.PANEL_CONFIG?.GOOGLE_DRIVE_FILE_ID || "default"}`;
+// Fase 2b — la key del alias ya no depende del ID de Drive (que va a
+// desaparecer). Ahora se ancla al email autorizado (dev vs prod tienen
+// distinto), lo que la hace estable frente al cutover. La key legacy se
+// mantiene solo para migrar transparentemente el alias almacenado antes.
+const EDITOR_NAME_STORAGE_KEY = `panelControlEditorName:${window.PANEL_CONFIG?.AUTHORIZED_EDITOR_EMAIL || window.PANEL_CONFIG?.GOOGLE_DRIVE_FILE_ID || "default"}`;
+const EDITOR_NAME_STORAGE_KEY_LEGACY = `panelControlEditorName:${window.PANEL_CONFIG?.GOOGLE_DRIVE_FILE_ID || "default"}`;
+
+// Migración transparente: si existe un alias guardado bajo la key vieja y
+// aún no hay uno bajo la nueva, lo copiamos y borramos la vieja. Efecto:
+// el usuario no ve el modal "¿Cómo te llamas?" cuando desplegamos.
+try {
+  if (typeof window.localStorage !== "undefined"
+      && EDITOR_NAME_STORAGE_KEY !== EDITOR_NAME_STORAGE_KEY_LEGACY
+      && !window.localStorage.getItem(EDITOR_NAME_STORAGE_KEY)) {
+    const legacy = window.localStorage.getItem(EDITOR_NAME_STORAGE_KEY_LEGACY);
+    if (legacy) {
+      window.localStorage.setItem(EDITOR_NAME_STORAGE_KEY, legacy);
+      window.localStorage.removeItem(EDITOR_NAME_STORAGE_KEY_LEGACY);
+      console.info("[alias] migrado desde key legacy a la key nueva anclada al email autorizado");
+    }
+  }
+} catch (_) { /* localStorage puede estar deshabilitado */ }
 const EDITOR_NAME_MAX_LENGTH = 24;
 // Short session id used as the appProperties key. Drive limits each key to
 // ~124 chars and the bag to ~30 entries, so we keep ids compact.
