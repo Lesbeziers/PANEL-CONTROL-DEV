@@ -3524,11 +3524,43 @@ async function exportExcelAplicativo() {
   showGridToast(`Excel Aplicativo exportado · ${monthNameCap} ${year}`);
 }
 
-function attachExcelExportControls(root) {
-  const exportBtn = root.querySelector(".export-excel-btn");
-  if (exportBtn) {
-    exportBtn.addEventListener("click", () => exportExcelAplicativo());
+async function exportPanelSnapshotXlsx() {
+  if (!window.ExcelJS) {
+    showGridToast("No se pudo generar el Excel (ExcelJS no cargado)");
+    return;
   }
+  try {
+    showGridToast("Generando copia local…");
+    const { buffer, sheetCount } = await buildExcelEdicionBuffer();
+    const blob = new Blob([buffer], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const url = URL.createObjectURL(blob);
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`;
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `PANEL_CONTROL_${stamp}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showGridToast(`Copia descargada · ${sheetCount} hoja(s)`);
+  } catch (err) {
+    console.error("exportPanelSnapshotXlsx error:", err);
+    showGridToast("Error al generar la copia local");
+  }
+}
+
+function attachExcelExportControls(root) {
+  root.querySelectorAll(".export-excel-btn").forEach((btn) => {
+    if (btn.dataset.export === "snapshot") {
+      btn.addEventListener("click", () => exportPanelSnapshotXlsx());
+    } else {
+      btn.addEventListener("click", () => exportExcelAplicativo());
+    }
+  });
 
   if (IS_VIEWER_MODE) return;
 
@@ -6415,6 +6447,9 @@ function renderMonthBlockGrid(root) {
           <button type="button" class="save-drive-btn" id="save-drive-btn">GUARDAR</button>
           `}
           <button type="button" class="export-excel-btn export-excel-btn--viewer" data-export="aplicativo">EXPORTAR APLICATIVO</button>
+          ${IS_VIEWER_MODE ? `` : `
+          <button type="button" class="export-excel-btn" data-export="snapshot" title="Descarga una copia local del panel completo en xlsx">DESCARGAR COPIA</button>
+          `}
           <div class="search-box-wrapper">
             <span class="search-box-icon" aria-hidden="true">⌕</span>
             <input type="text" class="search-box-input" placeholder="Buscar título..." autocomplete="off" aria-label="Buscar en el panel" />
