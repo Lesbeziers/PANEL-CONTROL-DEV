@@ -15,9 +15,7 @@
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
 import {
-  initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
+  getFirestore,
   doc,
   setDoc,
   getDoc,
@@ -46,20 +44,14 @@ if (!config || !config.projectId) {
 } else {
   try {
     const app = initializeApp(config);
-    // Firestore con caché local persistente en IndexedDB.
-    // - Cada carga del panel tras la primera arranca desde caché (0 lecturas
-    //   contra el servidor); el listener sincroniza diferencias en segundo
-    //   plano. Reduce el gasto de la cuota Spark ~80-90 % en uso normal.
-    // - persistentMultipleTabManager permite compartir la caché entre
-    //   varias pestañas del navegador sin errores.
-    // - Si el navegador no admite IndexedDB (modo incógnito con restricciones,
-    //   Safari con storage bloqueado, etc.), el SDK cae a caché en memoria
-    //   automáticamente sin lanzar excepción.
-    const db = initializeFirestore(app, {
-      localCache: persistentLocalCache({
-        tabManager: persistentMultipleTabManager(),
-      }),
-    });
+    // Nota: probamos la caché persistente en IndexedDB (persistentLocalCache
+    // con persistentMultipleTabManager) buscando ahorrar lecturas, pero
+    // observamos retardos en la propagación de writes entre editores — la
+    // caché acumulaba escrituras localmente antes de flush a servidor, lo
+    // que rompía la multiescritura en tiempo real. Volvemos a la caché en
+    // memoria por defecto. El ahorro de lecturas viene del snapshot inicial
+    // único (sin getDocs paralelo), no de caché.
+    const db = getFirestore(app);
     const auth = getAuth(app);
 
     // Exponer al resto del panel (código no-modular) mediante window.
