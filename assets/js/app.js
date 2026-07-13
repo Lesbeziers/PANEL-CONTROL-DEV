@@ -7183,10 +7183,18 @@ function handleFirestoreSnapshotBatch({ isInitial, changes }) {
 
 function applyInitialFirestoreSnapshot(changes) {
   const rowsByBlock = new Map();
-  changes.forEach(({ type, rowKey, data, fromLocal }) => {
-    // En el snapshot inicial esperamos SOLO "added". Ignoramos otros tipos y
-    // los docs marcados como deleted:true.
-    if (fromLocal) return;
+  changes.forEach(({ type, rowKey, data }) => {
+    // En el snapshot inicial esperamos SOLO "added". Ignoramos "removed" y
+    // docs marcados deleted:true.
+    //
+    // IMPORTANTE: NO filtramos por fromLocal aquí. Con la caché persistente
+    // activada, el primer snapshot viene desde IndexedDB local y puede
+    // marcar como "hasPendingWrites" los docs con escrituras pendientes de
+    // confirmar por el servidor (p. ej. una edición hecha justo antes de
+    // recargar). Filtrarlas HARÍA DESAPARECER esas filas del panel aunque
+    // sus datos estén perfectamente correctos en caché. El filtro fromLocal
+    // solo aplica en el flujo live (aplyLiveRowChange), donde sí queremos
+    // ignorar ecos de nuestros propios writes ya pintados en pantalla.
     if (type === "removed") return;
     if (!data || data.deleted === true) return;
     const blockId = data.blockId;
