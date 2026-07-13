@@ -263,9 +263,17 @@ body {
 }
 
 .export-excel-btn__arrow {
-  font-size: 11px;
+  font-size: 15px;
   line-height: 1;
   pointer-events: none;
+}
+
+/* Botón que despliega menú: texto a la izquierda con margen claro y
+   flecha a la derecha. El botón del visor (sin flecha) mantiene su
+   alineación centrada por defecto. */
+.export-excel-btn:has(.export-excel-btn__arrow) {
+  justify-content: space-between;
+  padding: 0 12px;
 }
 
 .export-excel-menu {
