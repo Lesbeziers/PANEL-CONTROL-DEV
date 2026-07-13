@@ -114,28 +114,11 @@ if (!config || !config.projectId) {
 
     console.info(`[firebase] SDK inicializado contra proyecto: ${config.projectId}`);
 
-    // FASE 0 — Test de conexión: escribimos un documento de "heartbeat" del
-    // arranque y luego lo leemos. Sirve para verificar que las reglas de
-    // seguridad y la config están correctas antes de empezar Fase 1.
-    // Este código se elimina cuando la Fase 1 arranque en serio.
-    (async () => {
-      try {
-        const testRef = doc(db, "_bootstrap", "phase0-heartbeat");
-        await setDoc(testRef, {
-          projectId: config.projectId,
-          lastCheck: serverTimestamp(),
-        }, { merge: true });
-        const snapshot = await getDoc(testRef);
-        if (snapshot.exists()) {
-          console.info("[firebase] ✅ conexión Firestore verificada (read + write OK)");
-        } else {
-          console.warn("[firebase] la escritura no dejó documento visible en la lectura posterior");
-        }
-      } catch (err) {
-        console.error("[firebase] ❌ conexión Firestore fallida:", err);
-        console.error("[firebase]    revisar Security Rules — probablemente están cerradas por defecto");
-      }
-    })();
+    // Nota: eliminado el heartbeat sobre _bootstrap que había en Fase 0. Ese
+    // test estaba pensado para verificar Firestore antes de que hubiera
+    // usuarios firmados. Con las Rules restrictivas (Fase 1.4) escribir
+    // sin sesión falla → generaba ruido en consola en cada arranque sin
+    // aportar nada nuevo (la propia carga del panel ya prueba la conexión).
 
     document.dispatchEvent(new CustomEvent("firebase:ready", { detail: { projectId: config.projectId } }));
   } catch (err) {

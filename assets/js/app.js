@@ -7741,42 +7741,9 @@ function startCellLocksListener() {
   });
 }
 
-// =============================================================================
-// FIREBASE AUTH BOOTSTRAP (Fase 1.4)
-//
-// Se llama tras la firma de Drive OAuth. Intenta silent-signin en Firebase
-// (rápido si el navegador ya tiene sesión); si no hay sesión, abre el popup
-// de Google. Cuando termina, compara el email con el autorizado y avisa por
-// toast si no coincide (aunque las Rules ya lo bloquearán server-side).
-// =============================================================================
-let firebaseAuthEnsureInFlight = false;
-
-async function ensureFirebaseAuthForEditor() {
-  if (firebaseAuthEnsureInFlight) return;
-  if (IS_VIEWER_MODE) return; // El visor no firma.
-  if (!window.PanelFirebase?.signInPanelUser) return;
-
-  const expectedEmail = window.PANEL_CONFIG?.AUTHORIZED_EDITOR_EMAIL;
-  if (!expectedEmail) {
-    console.warn("[auth] AUTHORIZED_EDITOR_EMAIL no configurado — no valido email");
-  }
-
-  firebaseAuthEnsureInFlight = true;
-  try {
-    const user = await window.PanelFirebase.signInPanelUser();
-    if (!user) {
-      console.warn("[auth] no se pudo firmar — el editor funcionará mientras las Rules estén abiertas");
-      showGridToast("No se pudo firmar en Firebase — reintenta desde el badge");
-      return;
-    }
-    if (expectedEmail && user.email !== expectedEmail) {
-      console.warn(`[auth] cuenta incorrecta: ${user.email} (se esperaba ${expectedEmail})`);
-      showGridToast(`⚠️ Cuenta incorrecta (${user.email}). Cierra sesión y usa ${expectedEmail}`);
-    }
-  } finally {
-    firebaseAuthEnsureInFlight = false;
-  }
-}
+// (ensureFirebaseAuthForEditor eliminado en Fase 2c — el gate de auth ahora
+//  vive directamente en bootInitialLoad → ensureAuthAndBoot, y sustituye por
+//  completo al gate de Drive.)
 
 // Selector de fuente de datos. La rama dev tiene el flag activado; la rama
 // main lo mantendrá desactivado hasta el cutover final.
@@ -7784,10 +7751,9 @@ function bootInitialLoad() {
   const useFirestore = window.PANEL_CONFIG?.USE_FIRESTORE_AS_SOURCE === true;
 
   if (useFirestore) {
-    // Rama Firestore. Los datos vienen de Firestore, pero seguimos usando
-    // Google Drive para: (1) identidad (login de la cuenta compartida),
-    // (2) presencia entre editores, (3) historial "Últimos cambios". Todo eso
-    // se irá migrando en fases posteriores.
+    // Rama Firestore. Firebase Auth es el gate único de identidad (Fase 2c).
+    // Drive OAuth queda inutilizado; se retirará en 2d cuando eliminemos
+    // gdrive.js del HTML.
     const startFirestoreData = () => {
       if (window.PanelFirebase?.db) {
         loadPanelFromFirestore();
@@ -7796,42 +7762,53 @@ function bootInitialLoad() {
       }
     };
 
-    // El visor no necesita OAuth — lectura pública.
+    // El visor no necesita auth — lectura pública.
     if (IS_VIEWER_MODE) {
       startFirestoreData();
       return;
     }
 
-    // Tras firmar en Drive: cargar Firestore + arrancar identidad/presencia.
-    // El historial ya no se carga desde Drive — su listener Firestore lo
-    // suscribe dentro de loadPanelFromFirestore (Fase 1.3e).
-    // La presencia también se ha migrado a Firestore (Fase 2a).
+    // Editor: arranque de todo lo post-auth (datos + alias + presencia).
     const startEditorSideEffects = async () => {
       startFirestoreData();
-      // ensureEditorName() abre el modal "¿Cómo te llamas?" si aún no hay alias.
       try { await ensureEditorName(); } catch (_) { /* opcional */ }
       startFirestorePresenceTracking();
-      // Firebase Auth (Fase 1.4). No bloquea el arranque — si falla, el panel
-      // sigue funcionando con las Rules permisivas actuales; cuando cerremos
-      // las Rules, sí será obligatorio.
-      ensureFirebaseAuthForEditor();
     };
 
-    if (window.GoogleDrive?.isSignedIn?.()) {
+    // Gate de Firebase Auth. Casos:
+    //   a) Ya hay sesión Firebase cacheada → arranque directo.
+    //   b) No hay sesión → popup de Google. Si el usuario firma, arranque.
+    //      Si cancela o falla, dejamos un toast y esperamos a que vuelva a
+    //      cargar la página (hard refresh).
+    const ensureAuthAndBoot = async () => {
+      if (!window.PanelFirebase?.auth) {
+        console.error("[auth] Firebase Auth no está inicializado");
+        return;
+      }
+      const expectedEmail = window.PANEL_CONFIG?.AUTHORIZED_EDITOR_EMAIL;
+      let user = window.PanelFirebase.auth.currentUser;
+      if (!user) {
+        user = await window.PanelFirebase.signInPanelUser();
+      }
+      if (!user) {
+        console.warn("[auth] sesión no obtenida — el editor no arrancará hasta que firmes");
+        showGridToast("Necesitas iniciar sesión para editar el panel");
+        return;
+      }
+      if (expectedEmail && user.email !== expectedEmail) {
+        // El usuario firmó con otra cuenta. Firestore rechazará sus escrituras
+        // por las Rules. Avisamos claramente y arrancamos igualmente en modo
+        // "lectura de facto" (los writes fallarán pero la UI carga).
+        console.warn(`[auth] cuenta ${user.email} no autorizada (se esperaba ${expectedEmail})`);
+        showGridToast(`⚠️ Cuenta incorrecta (${user.email}). Firma con ${expectedEmail}`);
+      }
       startEditorSideEffects();
-      return;
-    }
-    document.addEventListener("gdrive:signedin", startEditorSideEffects, { once: true });
-    if (window.GoogleDrive?.showGate) {
-      window.GoogleDrive.showGate();
+    };
+
+    if (window.PanelFirebase?.auth) {
+      ensureAuthAndBoot();
     } else {
-      const waitInterval = setInterval(() => {
-        if (window.GoogleDrive?.showGate) {
-          clearInterval(waitInterval);
-          window.GoogleDrive.showGate();
-        }
-      }, 100);
-      setTimeout(() => clearInterval(waitInterval), 10000);
+      document.addEventListener("firebase:ready", ensureAuthAndBoot, { once: true });
     }
     return;
   }
