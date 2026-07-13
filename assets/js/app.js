@@ -3554,12 +3554,52 @@ async function exportPanelSnapshotXlsx() {
 }
 
 function attachExcelExportControls(root) {
-  root.querySelectorAll(".export-excel-btn").forEach((btn) => {
-    if (btn.dataset.export === "snapshot") {
-      btn.addEventListener("click", () => exportPanelSnapshotXlsx());
-    } else {
+  // Visor: un solo botón "EXPORTAR APLICATIVO" sin menú.
+  if (IS_VIEWER_MODE) {
+    root.querySelectorAll(".export-excel-btn").forEach((btn) => {
       btn.addEventListener("click", () => exportExcelAplicativo());
-    }
+    });
+    return;
+  }
+
+  // Editor: desplegable "ACCIONES" con dos ítems.
+  const trigger = root.querySelector("#actions-menu-btn");
+  const menu = root.querySelector("#actions-menu");
+  if (!trigger || !menu) return;
+
+  const closeMenu = () => {
+    menu.classList.remove("open");
+    trigger.setAttribute("aria-expanded", "false");
+    document.removeEventListener("mousedown", handleOutside);
+    document.removeEventListener("keydown", handleEscape);
+  };
+  const openMenu = () => {
+    menu.classList.add("open");
+    trigger.setAttribute("aria-expanded", "true");
+    document.addEventListener("mousedown", handleOutside);
+    document.addEventListener("keydown", handleEscape);
+  };
+  const handleOutside = (event) => {
+    if (menu.contains(event.target) || trigger.contains(event.target)) return;
+    closeMenu();
+  };
+  const handleEscape = (event) => {
+    if (event.key === "Escape") { closeMenu(); trigger.focus(); }
+  };
+
+  trigger.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (menu.classList.contains("open")) closeMenu();
+    else openMenu();
+  });
+
+  menu.querySelectorAll(".export-excel-menu__item").forEach((item) => {
+    item.addEventListener("click", () => {
+      const kind = item.dataset.export;
+      closeMenu();
+      if (kind === "snapshot") exportPanelSnapshotXlsx();
+      else if (kind === "aplicativo") exportExcelAplicativo();
+    });
   });
 
   if (IS_VIEWER_MODE) return;
@@ -6446,9 +6486,19 @@ function renderMonthBlockGrid(root) {
           ${(IS_VIEWER_MODE || window.PANEL_CONFIG?.USE_FIRESTORE_AS_SOURCE) ? `` : `
           <button type="button" class="save-drive-btn" id="save-drive-btn">GUARDAR</button>
           `}
+          ${IS_VIEWER_MODE ? `
           <button type="button" class="export-excel-btn export-excel-btn--viewer" data-export="aplicativo">EXPORTAR APLICATIVO</button>
-          ${IS_VIEWER_MODE ? `` : `
-          <button type="button" class="export-excel-btn" data-export="snapshot" title="Descarga una copia local del panel completo en xlsx">DESCARGAR COPIA</button>
+          ` : `
+          <div class="export-excel-wrapper">
+            <button type="button" class="export-excel-btn" id="actions-menu-btn" aria-haspopup="true" aria-expanded="false" aria-controls="actions-menu">
+              ACCIONES
+              <span class="export-excel-btn__arrow" aria-hidden="true">▾</span>
+            </button>
+            <div class="export-excel-menu" id="actions-menu" role="menu" aria-labelledby="actions-menu-btn">
+              <button type="button" class="export-excel-menu__item" role="menuitem" data-export="aplicativo">Exportar a Aplicativo</button>
+              <button type="button" class="export-excel-menu__item" role="menuitem" data-export="snapshot">Generar BackUp en Excel</button>
+            </div>
+          </div>
           `}
           <div class="search-box-wrapper">
             <span class="search-box-icon" aria-hidden="true">⌕</span>
