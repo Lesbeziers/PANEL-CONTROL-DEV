@@ -7609,6 +7609,96 @@ function sweepExpiredCellLocks() {
   });
 }
 
+// =============================================================================
+// FIRESTORE PRESENCE (Fase 2a)
+//
+// Sustituye a startPresenceTracking (Drive appProperties). Comparte los
+// constantes PRESENCE_* del sistema anterior para mantener el mismo timing.
+// El shape que se pasa a renderPresenceState es idéntico, así que la UI
+// (badge + tooltip) sigue funcionando sin tocar nada.
+// =============================================================================
+let firestorePresenceUnsub = null;
+let firestorePresenceHeartbeatTimer = null;
+let firestorePresenceSweepTimer = null;
+let firestorePresenceStarted = false;
+const remotePresenceByCsession = new Map(); // sessionId → { editor, updatedAtMs, isSaving }
+
+function isPresenceEntryFresh(entry) {
+  if (!entry || !Number.isFinite(entry.updatedAtMs)) return false;
+  return (Date.now() - entry.updatedAtMs) <= PRESENCE_STALE_MS;
+}
+
+function renderFirestorePresenceFromMap() {
+  const otherNames = [];
+  const savingNames = [];
+  remotePresenceByCsession.forEach((entry, sessionId) => {
+    if (sessionId === PRESENCE_SESSION_ID) return; // no me cuento
+    if (!isPresenceEntryFresh(entry)) return;
+    otherNames.push(entry.editor || "");
+    if (entry.isSaving) savingNames.push(entry.editor || "");
+  });
+  renderPresenceState({ otherNames, savingNames });
+}
+
+function handleRemotePresenceChange({ type, sessionId, data }) {
+  if (type === "removed") {
+    remotePresenceByCsession.delete(sessionId);
+    renderFirestorePresenceFromMap();
+    return;
+  }
+  if (!data) return;
+  const updatedAtMs = data.updatedAt?.toMillis?.() ?? Date.now();
+  remotePresenceByCsession.set(sessionId, {
+    editor: data.editor || "",
+    updatedAtMs,
+    isSaving: !!data.isSaving,
+  });
+  renderFirestorePresenceFromMap();
+}
+
+async function startFirestorePresenceTracking() {
+  if (firestorePresenceStarted || IS_VIEWER_MODE) return;
+  if (!isFirestoreSourceActive()) return;
+  if (!window.PanelFirebase?.writePresenceHeartbeat) return;
+  firestorePresenceStarted = true;
+
+  renderPresenceState({ loading: true });
+  // Aseguramos alias antes del primer heartbeat.
+  try { await ensureEditorName(); } catch (_) { /* opcional */ }
+
+  const heartbeat = () => window.PanelFirebase.writePresenceHeartbeat(PRESENCE_SESSION_ID, {
+    editor: editorName || "anon",
+    isSaving: false, // en modo Firestore no hay ciclo "guardando" — cada edit persiste al instante
+  }).catch((err) => console.error("[presence] heartbeat error:", err));
+
+  heartbeat();
+  firestorePresenceHeartbeatTimer = setInterval(heartbeat, PRESENCE_HEARTBEAT_MS);
+
+  firestorePresenceUnsub = window.PanelFirebase.listenToPresence(
+    handleRemotePresenceChange,
+    (err) => console.error("[presence] listener error:", err)
+  );
+
+  // Barre entradas expiradas cada X segundos para que la UI las quite sin
+  // esperar a que llegue un doc-change (que no vendrá si la otra sesión
+  // simplemente ha dejado de heartbeatear).
+  firestorePresenceSweepTimer = setInterval(renderFirestorePresenceFromMap, PRESENCE_POLL_MS);
+
+  // Re-solicitar alias con doble-click en el badge (comportamiento original).
+  const el = presenceElement();
+  if (el && !el.dataset.firestoreDblclick) {
+    el.dataset.firestoreDblclick = "1";
+    el.addEventListener("dblclick", async () => {
+      await ensureEditorName({ force: true });
+      heartbeat();
+    });
+  }
+
+  window.addEventListener("beforeunload", () => {
+    try { window.PanelFirebase.deletePresence(PRESENCE_SESSION_ID); } catch (_) { /* ignore */ }
+  });
+}
+
 function startCellLocksListener() {
   if (!isFirestoreSourceActive()) return;
   if (cellLocksUnsub) return;
@@ -7694,11 +7784,12 @@ function bootInitialLoad() {
     // Tras firmar en Drive: cargar Firestore + arrancar identidad/presencia.
     // El historial ya no se carga desde Drive — su listener Firestore lo
     // suscribe dentro de loadPanelFromFirestore (Fase 1.3e).
+    // La presencia también se ha migrado a Firestore (Fase 2a).
     const startEditorSideEffects = async () => {
       startFirestoreData();
       // ensureEditorName() abre el modal "¿Cómo te llamas?" si aún no hay alias.
       try { await ensureEditorName(); } catch (_) { /* opcional */ }
-      startPresenceTracking();
+      startFirestorePresenceTracking();
       // Firebase Auth (Fase 1.4). No bloquea el arranque — si falla, el panel
       // sigue funcionando con las Rules permisivas actuales; cuando cerremos
       // las Rules, sí será obligatorio.

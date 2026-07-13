@@ -84,6 +84,10 @@ if (!config || !config.projectId) {
       // Capa de lectura en tiempo real (Fase 1.3c). El panel se suscribe una
       // vez tras el load inicial y recibe callbacks por cada doc que cambia.
       listenToPanelRows,
+      // Presencia entre editores — quién está online (Fase 2a).
+      writePresenceHeartbeat,
+      deletePresence,
+      listenToPresence,
       // Locks visuales — quién está editando qué celda (Fase 1.3d).
       writeCellLock,
       releaseCellLock,
@@ -406,6 +410,68 @@ function listenToPanelRows(onBatch, onError, options = {}) {
     }
   );
   console.info("[firestore-live] suscripción activa a panels/" + panelId + "/rows");
+  return unsub;
+}
+
+// =============================================================================
+// PRESENCE — Fase 2a
+//
+// Sustituye al sistema anterior basado en appProperties de Drive. Cada
+// sesión escribe un doc en `panels/{panelId}/presence/{sessionId}` con su
+// alias y un serverTimestamp que se refresca cada 20 s. Los clientes que
+// escuchan filtran docs con updatedAt más viejo de 60 s (huérfanos por
+// crash / cierre brusco). Al cerrar limpio la sesión hace deleteDoc.
+// =============================================================================
+
+async function writePresenceHeartbeat(sessionId, options = {}) {
+  const { editor = "anon", panelId = "main", isSaving = false } = options;
+  if (!window.PanelFirebase?.db || !sessionId) return false;
+  const db = window.PanelFirebase.db;
+  const ref = doc(db, "panels", panelId, "presence", sessionId);
+  await setDoc(ref, {
+    sessionId,
+    editor,
+    isSaving,
+    updatedAt: serverTimestamp(),
+  }, { merge: true });
+  return true;
+}
+
+async function deletePresence(sessionId, options = {}) {
+  const { panelId = "main" } = options;
+  if (!window.PanelFirebase?.db || !sessionId) return false;
+  const db = window.PanelFirebase.db;
+  const ref = doc(db, "panels", panelId, "presence", sessionId);
+  try { await deleteDoc(ref); return true; }
+  catch (_) { return false; }
+}
+
+function listenToPresence(onChange, onError, options = {}) {
+  const { panelId = "main" } = options;
+  if (!window.PanelFirebase?.db) return null;
+  const db = window.PanelFirebase.db;
+  const q = collection(db, "panels", panelId, "presence");
+  const unsub = onSnapshot(
+    q,
+    (snap) => {
+      snap.docChanges().forEach((change) => {
+        try {
+          onChange({
+            type: change.type,
+            sessionId: change.doc.id,
+            data: change.type === "removed" ? null : change.doc.data(),
+          });
+        } catch (err) {
+          console.error("[presence] onChange threw:", err);
+        }
+      });
+    },
+    (err) => {
+      console.error("[presence] snapshot error:", err);
+      if (typeof onError === "function") onError(err);
+    }
+  );
+  console.info("[presence] suscripción activa a panels/" + panelId + "/presence");
   return unsub;
 }
 
