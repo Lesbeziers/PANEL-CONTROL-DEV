@@ -2270,6 +2270,13 @@ async function buildExcelEdicionBuffer(srcBlocks = blocks) {
     }
   }
 
+  // Al abrir el libro, saltar directamente al mes que el editor está viendo.
+  // Si ese mes no tiene datos (no hay hoja creada), caemos al primero.
+  const activeIdx = Math.max(0, sortedMonths.findIndex(
+    (m) => m.month === currentCalendarContext.month && m.year === currentCalendarContext.year
+  ));
+  workbook.views = [{ activeTab: activeIdx }];
+
   const buffer = await workbook.xlsx.writeBuffer();
   return { buffer, sheetCount: sortedMonths.length };
 }
