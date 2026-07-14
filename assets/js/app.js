@@ -2001,11 +2001,12 @@ async function buildExcelEdicionBuffer(srcBlocks = blocks) {
   }
 
   // -------- PALETA (colores Office resueltos del tema del XLSX original) --------
+  const COLOR_MONTH_BAND = "FFBF8F00"; // banda ocre en la fila 1 con el nombre del mes
   const COLOR_BLUE_HDR   = "FF4472C4"; // fila de cabecera (LISTO/MES/TIPO/...)
   const COLOR_GREEN      = "FF70AD47"; // bloque tipo verde
   const COLOR_GOLD       = "FFFFC000"; // bloque tipo dorado
   const COLOR_ORANGE_TXT = "FFFFC000"; // texto "N SIMULTANEAS" (naranja/dorado)
-  const COLOR_WEEKEND    = "FFD9D9D9"; // gris para columnas de sábado/domingo
+  const COLOR_WEEKEND    = "FFADACAC"; // gris de las columnas de sábado/domingo en filas de datos
   const COLOR_WHITE      = "FFFFFFFF";
   const COLOR_BLACK      = "FF000000";
 
@@ -2092,13 +2093,16 @@ async function buildExcelEdicionBuffer(srcBlocks = blocks) {
       ...Array.from({ length: days }, () => ({ width: DAY_COL_WIDTH })),
     ];
 
-    // Fila 1: nombre grande del mes, centrado sobre las columnas de día
+    // Fila 1: banda ocre con el nombre del mes, centrada sobre las columnas
+    // de día. En el original la banda cubre TODAS las columnas de día, no
+    // solo una celda — usamos merge + fill sobre el rango entero.
     ws.mergeCells(1, DAY_COL_START, 1, DAY_COL_START + days - 1);
     const bigTitle = ws.getCell(1, DAY_COL_START);
     bigTitle.value = monthName;
-    bigTitle.font = { name: "Calibri", size: 16, bold: true };
+    bigTitle.font = { name: "Calibri", size: 11, bold: true, color: { argb: COLOR_WHITE } };
     bigTitle.alignment = { horizontal: "center", vertical: "center" };
-    ws.getRow(1).height = 24;
+    bigTitle.fill = { type: "pattern", pattern: "solid", fgColor: { argb: COLOR_MONTH_BAND } };
+    ws.getRow(1).height = 20;
 
     // Fila 2: cabeceras (LISTO/MES/TIPO/TITULO/INICIO VIG/FIN VIG/ID + 1..days)
     const fixedHeaders = ["LISTO", "MES", "TIPO", "TITULO", "INICIO VIG", "FIN VIG", "ID"];
@@ -2116,9 +2120,8 @@ async function buildExcelEdicionBuffer(srcBlocks = blocks) {
       cell.font = { name: "Calibri", size: 13, bold: true };
       cell.alignment = { horizontal: "center", vertical: "center" };
       cell.border = THIN_BORDER;
-      if (weekendDays.has(d)) {
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: COLOR_WEEKEND } };
-      }
+      // Fila 2 (cabecera de días) NO lleva gris de weekend en el original —
+      // se mantiene plana. El gris solo aparece en las filas de datos.
     }
     ws.getRow(2).height = 20;
 
@@ -2154,16 +2157,16 @@ async function buildExcelEdicionBuffer(srcBlocks = blocks) {
       });
 
       // Concurrencia por día (calculada por la app, sin fórmulas Excel).
+      // En el original la fila cabecera de bloque va UNIFORME de su color
+      // (verde/dorado) — no se corta con gris en los weekends. El gris solo
+      // aplica en las filas de datos que hay por debajo.
       const counts = getBlockDailyCounts(block, monthCtx);
       for (let d = 1; d <= days; d += 1) {
         const cell = ws.getCell(currentRow, DAY_COL_START + d - 1);
         const n = counts[d] || 0;
         cell.value = n > 0 ? n : null;
         cell.font = { name: "Calibri", size: 11, bold: true, color: { argb: COLOR_WHITE } };
-        cell.fill = {
-          type: "pattern", pattern: "solid",
-          fgColor: { argb: weekendDays.has(d) ? COLOR_WEEKEND : blockFill },
-        };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: blockFill } };
         cell.alignment = { horizontal: "center", vertical: "center" };
         cell.border = THIN_BORDER;
       }
