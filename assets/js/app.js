@@ -2158,15 +2158,27 @@ async function buildExcelEdicionBuffer(srcBlocks = blocks) {
         cell.border = THIN_BORDER;
       });
 
-      // Concurrencia por día (calculada por la app, sin fórmulas Excel).
-      // En el original la fila cabecera de bloque va UNIFORME de su color
-      // (verde/dorado) — no se corta con gris en los weekends. El gris solo
-      // aplica en las filas de datos que hay por debajo.
-      const counts = getBlockDailyCounts(block, monthCtx);
+      // Rango de filas de datos que colgarán DEBAJO del header (necesario
+      // para escribir las fórmulas =SUM(...) del header). Se calcula ANTES
+      // de escribir las celdas de día porque necesitamos apuntar a esas
+      // futuras filas ya en el header.
+      const orderedRows = getOrderedRowsForMonth(block, monthCtx);
+      const visibleRows = orderedRows.filter(
+        (item) => item.isVisibleInCurrentMonth && !isPlaceholderRow(item.row)
+      );
+      const dataRowCount = Math.max(1, visibleRows.length); // fallback vacía cuenta 1
+      const firstDataRow = currentRow + 1;
+      const lastDataRow  = firstDataRow + dataRowCount - 1;
+
+      // Concurrencia por día — fórmulas =SUM(colFirstData:colLastData) para
+      // que el conteo se recalcule si el editor toca a mano las filas de
+      // datos en el xlsx. Idéntico al original. Fila cabecera va UNIFORME de
+      // su color (verde/dorado) — sin corte gris en los weekends.
       for (let d = 1; d <= days; d += 1) {
-        const cell = ws.getCell(currentRow, DAY_COL_START + d - 1);
-        const n = counts[d] || 0;
-        cell.value = n > 0 ? n : null;
+        const colNum = DAY_COL_START + d - 1;
+        const colLetter = ws.getColumn(colNum).letter;
+        const cell = ws.getCell(currentRow, colNum);
+        cell.value = { formula: `SUM(${colLetter}${firstDataRow}:${colLetter}${lastDataRow})` };
         cell.font = { name: "Calibri", size: 11, bold: true, color: { argb: COLOR_WHITE } };
         cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: blockFill } };
         cell.alignment = { horizontal: "center", vertical: "center" };
@@ -2175,10 +2187,6 @@ async function buildExcelEdicionBuffer(srcBlocks = blocks) {
       currentRow += 1;
 
       // ------ Filas de datos: piezas visibles ese mes (spanning incluido) ------
-      const orderedRows = getOrderedRowsForMonth(block, monthCtx);
-      const visibleRows = orderedRows.filter(
-        (item) => item.isVisibleInCurrentMonth && !isPlaceholderRow(item.row)
-      );
 
       // Si el bloque no tiene piezas este mes, dejamos una fila vacía debajo
       // de la cabecera para respetar la estructura visual del original.
