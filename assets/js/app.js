@@ -2007,6 +2007,7 @@ async function buildExcelEdicionBuffer(srcBlocks = blocks) {
   const COLOR_GOLD       = "FFFFC000"; // bloque tipo dorado
   const COLOR_ORANGE_TXT = "FFFFC000"; // texto "N SIMULTANEAS" (naranja/dorado)
   const COLOR_WEEKEND    = "FFADACAC"; // gris de las columnas de sábado/domingo en filas de datos
+  const COLOR_DATA_TEXT  = "FF2E75B6"; // azul oscuro (Blue Accent5 Darker 25%) de los textos en A-G
   const COLOR_WHITE      = "FFFFFFFF";
   const COLOR_BLACK      = "FF000000";
 
@@ -2204,7 +2205,9 @@ async function buildExcelEdicionBuffer(srcBlocks = blocks) {
             // Celda LISTO: check verde grande.
             cell.font = { name: "Calibri", size: 14, bold: true, color: { argb: COLOR_GREEN } };
           } else {
-            cell.font = { name: "Calibri", size: 11 };
+            // MES / TIPO / TITULO / INICIO VIG / FIN VIG / ID: azul oscuro
+            // en negrita, siguiendo el estilo del panel manual.
+            cell.font = { name: "Calibri", size: 11, bold: true, color: { argb: COLOR_DATA_TEXT } };
           }
           cell.alignment = {
             horizontal: (i === 3 ? "left" : "center"),
