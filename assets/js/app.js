@@ -2009,6 +2009,7 @@ async function buildExcelEdicionBuffer(srcBlocks = blocks) {
   const COLOR_WEEKEND    = "FFADACAC"; // gris de las columnas de sábado/domingo en filas de datos
   const COLOR_DATA_TEXT  = "FF2E75B6"; // azul oscuro (Blue Accent5 Darker 25%) de los textos en A-G
   const COLOR_UPDATED    = "FFFF0000"; // rojo — marca "actualizado" del panel
+  const COLOR_DATE_ERROR = "FFFFC7CE"; // rosa claro — celdas INICIO/FIN cuando hay error de fecha
   const COLOR_WHITE      = "FFFFFFFF";
   const COLOR_BLACK      = "FF000000";
 
@@ -2249,6 +2250,16 @@ async function buildExcelEdicionBuffer(srcBlocks = blocks) {
         // Fechas siempre como texto crudo (evita que Excel intente parsear "25/6").
         ws.getCell(currentRow, 5).numFmt = "@";
         ws.getCell(currentRow, 6).numFmt = "@";
+
+        // Si la fila tiene error de fecha (parse malo o inicio > fin), pintamos
+        // INICIO VIG + FIN VIG en rosa/rojo claro — misma señal que da el
+        // panel con borde rojo. Ayuda a los editores a detectar el error en
+        // el propio xlsx sin tener que volver a abrir la app.
+        const hasDateError = !!row.startDateError || !!row.endDateError || !!row.dateRangeError;
+        if (hasDateError) {
+          ws.getCell(currentRow, 5).fill = { type: "pattern", pattern: "solid", fgColor: { argb: COLOR_DATE_ERROR } };
+          ws.getCell(currentRow, 6).fill = { type: "pattern", pattern: "solid", fgColor: { argb: COLOR_DATE_ERROR } };
+        }
 
         // Días activos: intersección del rango de la pieza con este mes.
         const activeDays = new Set();
