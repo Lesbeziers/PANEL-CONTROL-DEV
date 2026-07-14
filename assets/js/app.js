@@ -2000,115 +2000,236 @@ async function buildExcelEdicionBuffer(srcBlocks = blocks) {
     throw new Error("ExcelJS no cargado");
   }
 
-  // Mapa de colores UI → colores Excel (ARGB)
+  // -------- PALETA (colores Office resueltos del tema del XLSX original) --------
+  const COLOR_BLUE_HDR   = "FF4472C4"; // fila de cabecera (LISTO/MES/TIPO/...)
+  const COLOR_GREEN      = "FF70AD47"; // bloque tipo verde
+  const COLOR_GOLD       = "FFFFC000"; // bloque tipo dorado
+  const COLOR_ORANGE_TXT = "FFFFC000"; // texto "N SIMULTANEAS" (naranja/dorado)
+  const COLOR_WEEKEND    = "FFD9D9D9"; // gris para columnas de sábado/domingo
+  const COLOR_WHITE      = "FFFFFFFF";
+  const COLOR_BLACK      = "FF000000";
+
   const HEADER_COLOR_MAP = {
-    "#8fb596": "FF70AD47", // verde
-    "#e8cd8e": "FFFFC000", // amarillo
-    "#aa87c6": "FFAA87C6", // púrpura oscuro
-    "#c7a8e5": "FFC7A8E5", // púrpura claro
+    "#8fb596": COLOR_GREEN,
+    "#e8cd8e": COLOR_GOLD,
+    "#aa87c6": COLOR_GREEN, // sin variante morada en el original
+    "#c7a8e5": COLOR_GREEN,
   };
-  const COLOR_RED_SEP   = "FFC00000";
-  const COLOR_BLUE_HDR  = "FF4472C4";
-  const COLOR_WHITE     = "FFFFFFFF";
-  const COLOR_BLACK     = "FF000000";
+  const blockFillArgb = (block) =>
+    HEADER_COLOR_MAP[block?.headerColor?.toLowerCase?.()] || COLOR_GREEN;
 
-  function toArgb(hexColor) {
-    return HEADER_COLOR_MAP[hexColor?.toLowerCase()] || "FFD9D9D9";
-  }
+  const THIN_BORDER = {
+    top:    { style: "thin", color: { argb: COLOR_BLACK } },
+    left:   { style: "thin", color: { argb: COLOR_BLACK } },
+    right:  { style: "thin", color: { argb: COLOR_BLACK } },
+    bottom: { style: "thin", color: { argb: COLOR_BLACK } },
+  };
 
-  function applyHeaderStyle(cell, bgArgb, textArgb = COLOR_WHITE) {
-    cell.font = { bold: true, color: { argb: textArgb } };
-    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: bgArgb } };
-  }
+  // Anchos de columna (calcados del original — D "TITULO" es el ancho grande).
+  const FIXED_COL_WIDTHS = [
+    8,   // A LISTO
+    9,   // B MES
+    23,  // C TIPO
+    90,  // D TITULO
+    10,  // E INICIO VIG
+    9,   // F FIN VIG
+    12,  // G ID
+  ];
+  const DAY_COL_WIDTH = 5;
+  const DAY_COL_START = FIXED_COL_WIDTHS.length + 1; // primera columna de día = H (8)
 
-  // Recopilar meses con datos
+  // -------- Meses a exportar --------
+  // A diferencia del export antiguo (que usaba solo homeMonth), aquí incluimos
+  // CUALQUIER mes tocado por el rango de vigencia de cada fila. Así una pieza
+  // que va del 25/06 al 01/07 aparece en el sheet de junio Y en el de julio,
+  // igual que en el planning manual.
   const monthsMap = new Map();
+  const addMonth = (month, year) => {
+    if (!Number.isInteger(month) || !Number.isInteger(year)) return;
+    const key = `${year}-${String(month).padStart(2, "0")}`;
+    if (!monthsMap.has(key)) monthsMap.set(key, { month, year });
+  };
   srcBlocks.forEach((block) => {
     if (block.isSeparator) return;
     block.rows.forEach((row) => {
       if (isPlaceholderRow(row)) return;
-      const key = `${row.homeYear}-${String(row.homeMonth).padStart(2, "0")}`;
-      if (!monthsMap.has(key)) {
-        monthsMap.set(key, { month: row.homeMonth, year: row.homeYear });
+      addMonth(row.homeMonth, row.homeYear);
+      const range = getRowRange(row);
+      if (range?.startDate && range?.endDate) {
+        const cursor = new Date(range.startDate.getFullYear(), range.startDate.getMonth(), 1);
+        const stop = new Date(range.endDate.getFullYear(), range.endDate.getMonth(), 1);
+        while (cursor <= stop) {
+          addMonth(cursor.getMonth() + 1, cursor.getFullYear());
+          cursor.setMonth(cursor.getMonth() + 1);
+        }
       }
     });
   });
-
   if (monthsMap.size === 0) {
     const { month, year } = currentCalendarContext;
-    monthsMap.set(`${year}-${String(month).padStart(2, "0")}`, { month, year });
+    addMonth(month, year);
   }
-
-  const sortedMonths = [...monthsMap.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([, ctx]) => ctx);
+  const sortedMonths = [...monthsMap.values()]
+    .sort((a, b) => (a.year - b.year) || (a.month - b.month));
 
   const workbook = new ExcelJS.Workbook();
 
-  sortedMonths.forEach(({ month, year }) => {
+  for (const { month, year } of sortedMonths) {
     const monthName = MONTH_NAMES_ES[month - 1].toUpperCase();
-    const ws = workbook.addWorksheet(`${monthName} ${year}`);
+    const days = daysInMonth(month, year);
+    // Días de fin de semana (JS getDay: dom=0, sáb=6).
+    const weekendDays = new Set();
+    for (let d = 1; d <= days; d += 1) {
+      const dow = new Date(year, month - 1, d).getDay();
+      if (dow === 0 || dow === 6) weekendDays.add(d);
+    }
 
+    const ws = workbook.addWorksheet(`PANEL CONTROL ${monthName} ${year}`);
+
+    // Anchos de columna
     ws.columns = [
-      { width: 8  },  // LISTO
-      { width: 55 },  // TITULO
-      { width: 12 },  // INICIO VIG
-      { width: 12 },  // FIN VIG
-      { width: 18 },  // GENERO
-      { width: 14 },  // ID
-      { width: 12 },  // ACTUALIZADO
-      { width: 28 },  // ROW_KEY (stable identity used for merge-on-save)
+      ...FIXED_COL_WIDTHS.map((w) => ({ width: w })),
+      ...Array.from({ length: days }, () => ({ width: DAY_COL_WIDTH })),
     ];
-    // ROW_KEY is technical metadata, hide it from human readers.
-    ws.getColumn(8).hidden = true;
 
-    // — Fila de cabecera principal (azul, negrita, blanco) —
-    const headerRow = ws.addRow(["LISTO", "TITULO", "INICIO VIG", "FIN VIG", "GENERO", "ID", "ACTUALIZADO", "ROW_KEY"]);
-    headerRow.eachCell((cell) => applyHeaderStyle(cell, COLOR_BLUE_HDR));
-    headerRow.commit();
+    // Fila 1: nombre grande del mes, centrado sobre las columnas de día
+    ws.mergeCells(1, DAY_COL_START, 1, DAY_COL_START + days - 1);
+    const bigTitle = ws.getCell(1, DAY_COL_START);
+    bigTitle.value = monthName;
+    bigTitle.font = { name: "Calibri", size: 16, bold: true };
+    bigTitle.alignment = { horizontal: "center", vertical: "center" };
+    ws.getRow(1).height = 24;
 
-    // — Bloques —
-    srcBlocks.forEach((block) => {
-      const blockLabel  = block.blockType.toUpperCase();
-      const isSep       = block.isSeparator;
-      const isRedSep    = isSep && (blockLabel === "OTROS CANALES" || blockLabel === "VOD" || blockLabel === "FREEMIUM" || blockLabel === "UPSELL");
-      const bgArgb      = isRedSep ? COLOR_RED_SEP : toArgb(block.headerColor);
-      const textArgb    = COLOR_WHITE;
+    // Fila 2: cabeceras (LISTO/MES/TIPO/TITULO/INICIO VIG/FIN VIG/ID + 1..days)
+    const fixedHeaders = ["LISTO", "MES", "TIPO", "TITULO", "INICIO VIG", "FIN VIG", "ID"];
+    fixedHeaders.forEach((label, i) => {
+      const cell = ws.getCell(2, i + 1);
+      cell.value = label;
+      cell.font = { name: "Calibri", size: 11, bold: true, color: { argb: COLOR_WHITE } };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: COLOR_BLUE_HDR } };
+      cell.alignment = { horizontal: "center", vertical: "center" };
+      cell.border = THIN_BORDER;
+    });
+    for (let d = 1; d <= days; d += 1) {
+      const cell = ws.getCell(2, DAY_COL_START + d - 1);
+      cell.value = d;
+      cell.font = { name: "Calibri", size: 13, bold: true };
+      cell.alignment = { horizontal: "center", vertical: "center" };
+      cell.border = THIN_BORDER;
+      if (weekendDays.has(d)) {
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: COLOR_WEEKEND } };
+      }
+    }
+    ws.getRow(2).height = 20;
 
-      // Cabecera de bloque (celda A fusionada A:H)
-      const blockHeaderRow = ws.addRow([blockLabel, null, null, null, null, null, null, null]);
-      const rowNum = blockHeaderRow.number;
-      ws.mergeCells(`A${rowNum}:H${rowNum}`);
-      applyHeaderStyle(blockHeaderRow.getCell(1), bgArgb, textArgb);
-      blockHeaderRow.commit();
+    // Bloques: uno por bloque del panel (aunque no tenga filas visibles ese mes).
+    const monthCtx = { month, year, daysInMonth: days };
+    let currentRow = 3;
 
-      if (isSep) return;
+    for (const block of srcBlocks) {
+      if (block?.isSeparator) continue; // los separadores del panel no se replican
+      const blockLabel = (block.blockType || "").toUpperCase();
+      const blockFill = blockFillArgb(block);
 
-      // Filas de datos del mes
-      const monthRows = block.rows.filter(
-        (row) => row.homeMonth === month && row.homeYear === year && !isPlaceholderRow(row)
+      // ------ Fila cabecera del bloque ------
+      // TITULO col D = "N SIMULTANEAS" (naranja) si el bloque tiene límite.
+      const simulLabel = Number.isInteger(block.maxSimultaneous)
+        ? `${block.maxSimultaneous} SIMULTANEAS`
+        : "";
+      const headerVals = ["", monthName, blockLabel, simulLabel, "", "", ""];
+      headerVals.forEach((v, i) => {
+        const cell = ws.getCell(currentRow, i + 1);
+        cell.value = v || null;
+        const isTitleCell = (i === 3);
+        cell.font = {
+          name: "Calibri", size: 11, bold: true,
+          color: { argb: isTitleCell ? COLOR_ORANGE_TXT : COLOR_WHITE },
+        };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: blockFill } };
+        cell.alignment = {
+          horizontal: (i === 1 ? "left" : "center"),
+          vertical: "center",
+        };
+        cell.border = THIN_BORDER;
+      });
+
+      // Concurrencia por día (calculada por la app, sin fórmulas Excel).
+      const counts = getBlockDailyCounts(block, monthCtx);
+      for (let d = 1; d <= days; d += 1) {
+        const cell = ws.getCell(currentRow, DAY_COL_START + d - 1);
+        const n = counts[d] || 0;
+        cell.value = n > 0 ? n : null;
+        cell.font = { name: "Calibri", size: 11, bold: true, color: { argb: COLOR_WHITE } };
+        cell.fill = {
+          type: "pattern", pattern: "solid",
+          fgColor: { argb: weekendDays.has(d) ? COLOR_WEEKEND : blockFill },
+        };
+        cell.alignment = { horizontal: "center", vertical: "center" };
+        cell.border = THIN_BORDER;
+      }
+      currentRow += 1;
+
+      // ------ Filas de datos: piezas visibles ese mes (spanning incluido) ------
+      const orderedRows = getOrderedRowsForMonth(block, monthCtx);
+      const visibleRows = orderedRows.filter(
+        (item) => item.isVisibleInCurrentMonth && !isPlaceholderRow(item.row)
       );
 
-      monthRows.forEach((row) => {
-        const dataRow = ws.addRow([
-          encodeListoByMonth(row.listoByMonth) || null,
-          row.title       || null,
-          row.startDateText || null,
-          row.endDateText   || null,
-          row.genre       ? row.genre.toUpperCase() : null,
-          row.id          || null,
-          !!row.actualizado,
-          row.rowKey      || null,
-        ]);
-        // Forzar texto en columnas de fecha
-        dataRow.getCell(3).numFmt = "@";
-        dataRow.getCell(4).numFmt = "@";
-        // ROW_KEY: store as plain text, no formula/number coercion.
-        dataRow.getCell(8).numFmt = "@";
-        dataRow.commit();
-      });
-    });
-  });
+      for (const { row, rowRange } of visibleRows) {
+        // Marcador LISTO por MES: true/false para este mes concreto
+        const monthKey = `${year}-${String(month).padStart(2, "0")}`;
+        const isListo = !!row.listoByMonth?.[monthKey];
+
+        const rowVals = [
+          isListo,
+          monthName,
+          blockLabel,
+          row.title || "",
+          row.startDateText || "",
+          row.endDateText || "",
+          row.id || "",
+        ];
+        rowVals.forEach((v, i) => {
+          const cell = ws.getCell(currentRow, i + 1);
+          cell.value = v;
+          cell.font = { name: "Calibri", size: 11 };
+          cell.alignment = {
+            horizontal: (i === 3 ? "left" : "center"),
+            vertical: "center",
+          };
+          cell.border = THIN_BORDER;
+        });
+        // Fechas siempre como texto crudo (evita que Excel intente parsear "25/6").
+        ws.getCell(currentRow, 5).numFmt = "@";
+        ws.getCell(currentRow, 6).numFmt = "@";
+
+        // Días activos: intersección del rango de la pieza con este mes.
+        const activeDays = new Set();
+        if (rowRange?.startDate && rowRange?.endDate) {
+          const monthStart = new Date(year, month - 1, 1);
+          const monthEnd = new Date(year, month, 0);
+          const visStart = rowRange.startDate < monthStart ? monthStart : rowRange.startDate;
+          const visEnd   = rowRange.endDate   > monthEnd   ? monthEnd   : rowRange.endDate;
+          if (visEnd >= visStart) {
+            for (let d = visStart.getDate(); d <= visEnd.getDate(); d += 1) {
+              activeDays.add(d);
+            }
+          }
+        }
+        for (let d = 1; d <= days; d += 1) {
+          const cell = ws.getCell(currentRow, DAY_COL_START + d - 1);
+          if (activeDays.has(d)) cell.value = 1;
+          cell.font = { name: "Calibri", size: 11 };
+          cell.alignment = { horizontal: "center", vertical: "center" };
+          cell.border = THIN_BORDER;
+          if (weekendDays.has(d)) {
+            cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: COLOR_WEEKEND } };
+          }
+        }
+        currentRow += 1;
+      }
+    }
+  }
 
   const buffer = await workbook.xlsx.writeBuffer();
   return { buffer, sheetCount: sortedMonths.length };
