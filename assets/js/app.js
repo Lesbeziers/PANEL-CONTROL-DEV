@@ -2183,8 +2183,13 @@ async function buildExcelEdicionBuffer(srcBlocks = blocks) {
         const monthKey = `${year}-${String(month).padStart(2, "0")}`;
         const isListo = !!row.listoByMonth?.[monthKey];
 
+        // LISTO se representa con un check Unicode "✓" verde bold para TRUE
+        // y celda vacía para FALSE. El original usa la feature de checkbox
+        // nativo de Excel 365 (featurePropertyBag), pero ExcelJS no lo
+        // soporta — el símbolo Unicode da el mismo resultado visual y
+        // funciona en cualquier versión / Google Sheets.
         const rowVals = [
-          isListo,
+          isListo ? "✓" : "",
           monthName,
           blockLabel,
           row.title || "",
@@ -2195,7 +2200,12 @@ async function buildExcelEdicionBuffer(srcBlocks = blocks) {
         rowVals.forEach((v, i) => {
           const cell = ws.getCell(currentRow, i + 1);
           cell.value = v;
-          cell.font = { name: "Calibri", size: 11 };
+          if (i === 0) {
+            // Celda LISTO: check verde grande.
+            cell.font = { name: "Calibri", size: 14, bold: true, color: { argb: COLOR_GREEN } };
+          } else {
+            cell.font = { name: "Calibri", size: 11 };
+          }
           cell.alignment = {
             horizontal: (i === 3 ? "left" : "center"),
             vertical: "center",
