@@ -7199,6 +7199,58 @@ function isFirestoreSourceActive() {
     && !!window.PanelFirebase?.writeRowToFirestore;
 }
 
+// -----------------------------------------------------------------------------
+// Banner "no se está guardando"
+//
+// Toda escritura DATOS de Firestore (filas, borrados, reorden) pasa por
+// markFirestoreWriteOk() / markFirestoreWriteFailed(). Cuando lleva una
+// racha de fallos, aparece un banner fijo arriba avisando al usuario.
+// Se oculta solo cuando vuelve a haber una escritura exitosa.
+//
+// NO se aplica a presencia ni locks — esas escrituras fallan a menudo por
+// bloqueos de red intermitentes y no son fatales para la integridad de
+// datos, meterlos aquí ensuciaría con falsos positivos.
+// -----------------------------------------------------------------------------
+let firestoreWritesHealthy = true;
+let firestoreErrorBannerEl = null;
+
+function ensureFirestoreErrorBanner() {
+  if (firestoreErrorBannerEl && document.body.contains(firestoreErrorBannerEl)) {
+    return firestoreErrorBannerEl;
+  }
+  const el = document.createElement("div");
+  el.className = "firestore-error-banner";
+  el.innerHTML = `
+    <span class="firestore-error-banner__text">
+      ⚠ No se está guardando en la nube — tus cambios podrían perderse.
+      Cierra sesión y vuelve a firmar, o recarga la página.
+    </span>
+    <button type="button" class="firestore-error-banner__reload">Recargar página</button>
+  `;
+  el.querySelector(".firestore-error-banner__reload").addEventListener("click", () => {
+    window.location.reload();
+  });
+  document.body.appendChild(el);
+  firestoreErrorBannerEl = el;
+  return el;
+}
+
+function markFirestoreWriteFailed(err) {
+  if (firestoreWritesHealthy) {
+    firestoreWritesHealthy = false;
+    console.error("[firestore-write] escrituras rotas — mostrando banner:", err?.code || err);
+  }
+  const el = ensureFirestoreErrorBanner();
+  el.classList.add("is-visible");
+}
+
+function markFirestoreWriteOk() {
+  if (firestoreWritesHealthy) return;
+  firestoreWritesHealthy = true;
+  console.info("[firestore-write] escrituras recuperadas — ocultando banner");
+  if (firestoreErrorBannerEl) firestoreErrorBannerEl.classList.remove("is-visible");
+}
+
 function scheduleFirestoreRowSync(row, blockId) {
   if (!isFirestoreSourceActive()) return;
   if (!row?.rowKey || row._autoPlaceholder) return;
@@ -7211,7 +7263,11 @@ function scheduleFirestoreRowSync(row, blockId) {
   const timer = setTimeout(() => {
     firestoreSyncTimers.delete(key);
     window.PanelFirebase.writeRowToFirestore(blockId, row, { editor: editorName || "anon" })
-      .catch((err) => console.error("[firestore-sync] error:", err, "row:", row.rowKey));
+      .then(() => markFirestoreWriteOk())
+      .catch((err) => {
+        console.error("[firestore-sync] error:", err, "row:", row.rowKey);
+        markFirestoreWriteFailed(err);
+      });
   }, FIRESTORE_SYNC_DEBOUNCE_MS);
   firestoreSyncTimers.set(key, timer);
 }
@@ -7227,9 +7283,11 @@ async function flushFirestoreRowImmediate(row, blockId, extra = {}) {
       editor: editorName || "anon",
       ...extra,
     });
+    markFirestoreWriteOk();
     return true;
   } catch (err) {
     console.error("[firestore-sync] flush error:", err, "row:", row.rowKey);
+    markFirestoreWriteFailed(err);
     return false;
   }
 }
@@ -7241,9 +7299,11 @@ async function flushFirestoreSoftDelete(rowKey) {
   if (existing) { clearTimeout(existing); firestoreSyncTimers.delete(rowKey); }
   try {
     await window.PanelFirebase.softDeleteRowInFirestore(rowKey, { editor: editorName || "anon" });
+    markFirestoreWriteOk();
     return true;
   } catch (err) {
     console.error("[firestore-sync] soft-delete error:", err, "rowKey:", rowKey);
+    markFirestoreWriteFailed(err);
     return false;
   }
 }
@@ -7252,9 +7312,11 @@ async function flushFirestoreOrderResync(blockId, rows) {
   if (!isFirestoreSourceActive() || !blockId) return false;
   try {
     await window.PanelFirebase.syncBlockOrderIndicesToFirestore(blockId, rows, { editor: editorName || "anon" });
+    markFirestoreWriteOk();
     return true;
   } catch (err) {
     console.error("[firestore-sync] order-resync error:", err, "blockId:", blockId);
+    markFirestoreWriteFailed(err);
     return false;
   }
 }

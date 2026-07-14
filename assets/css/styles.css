@@ -1832,3 +1832,47 @@ body {
   pointer-events: none;
   z-index: 2;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Banner "no se está guardando" — aparece cuando Firestore rebota escrituras. */
+/* Oculto por defecto; JS lo hace visible añadiendo .is-visible.               */
+/* -------------------------------------------------------------------------- */
+.firestore-error-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 12px 24px;
+  background: #d94848;
+  color: #fff;
+  font-weight: 600;
+  font-size: 14px;
+  line-height: 1.4;
+  text-align: center;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  z-index: 10000;
+}
+.firestore-error-banner.is-visible {
+  display: flex;
+}
+.firestore-error-banner__text {
+  max-width: 900px;
+}
+.firestore-error-banner__reload {
+  background: #fff;
+  color: #d94848;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 14px;
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.firestore-error-banner__reload:hover {
+  background: #f4f4f4;
+}
