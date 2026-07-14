@@ -2008,6 +2008,7 @@ async function buildExcelEdicionBuffer(srcBlocks = blocks) {
   const COLOR_ORANGE_TXT = "FFFFC000"; // texto "N SIMULTANEAS" (naranja/dorado)
   const COLOR_WEEKEND    = "FFADACAC"; // gris de las columnas de sábado/domingo en filas de datos
   const COLOR_DATA_TEXT  = "FF2E75B6"; // azul oscuro (Blue Accent5 Darker 25%) de los textos en A-G
+  const COLOR_UPDATED    = "FFFF0000"; // rojo — marca "actualizado" del panel
   const COLOR_WHITE      = "FFFFFFFF";
   const COLOR_BLACK      = "FF000000";
 
@@ -2198,6 +2199,10 @@ async function buildExcelEdicionBuffer(srcBlocks = blocks) {
           row.endDateText || "",
           row.id || "",
         ];
+        // Si la fila está marcada como "actualizada" en el panel, el texto
+        // de B-G (cols de contenido) va en rojo. El check LISTO (col A)
+        // sigue verde — es un marcador semántico independiente.
+        const contentTextColor = row.actualizado ? COLOR_UPDATED : COLOR_DATA_TEXT;
         rowVals.forEach((v, i) => {
           const cell = ws.getCell(currentRow, i + 1);
           cell.value = v;
@@ -2205,9 +2210,7 @@ async function buildExcelEdicionBuffer(srcBlocks = blocks) {
             // Celda LISTO: check verde grande.
             cell.font = { name: "Calibri", size: 14, bold: true, color: { argb: COLOR_GREEN } };
           } else {
-            // MES / TIPO / TITULO / INICIO VIG / FIN VIG / ID: azul oscuro
-            // en negrita, siguiendo el estilo del panel manual.
-            cell.font = { name: "Calibri", size: 11, bold: true, color: { argb: COLOR_DATA_TEXT } };
+            cell.font = { name: "Calibri", size: 11, bold: true, color: { argb: contentTextColor } };
           }
           cell.alignment = {
             horizontal: (i === 3 ? "left" : "center"),
