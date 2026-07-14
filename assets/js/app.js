@@ -2180,6 +2180,30 @@ async function buildExcelEdicionBuffer(srcBlocks = blocks) {
         (item) => item.isVisibleInCurrentMonth && !isPlaceholderRow(item.row)
       );
 
+      // Si el bloque no tiene piezas este mes, dejamos una fila vacía debajo
+      // de la cabecera para respetar la estructura visual del original
+      // (siempre hay hueco físico para la categoría, aunque esté sin uso).
+      if (visibleRows.length === 0) {
+        for (let col = 1; col <= 7; col += 1) {
+          const cell = ws.getCell(currentRow, col);
+          cell.value = col === 2 ? monthName : col === 3 ? blockLabel : null;
+          cell.font = { name: "Calibri", size: 11, bold: true, color: { argb: COLOR_DATA_TEXT } };
+          cell.alignment = { horizontal: (col === 4 ? "left" : "center"), vertical: "center" };
+          cell.border = THIN_BORDER;
+        }
+        for (let d = 1; d <= days; d += 1) {
+          const cell = ws.getCell(currentRow, DAY_COL_START + d - 1);
+          cell.font = { name: "Calibri", size: 11 };
+          cell.alignment = { horizontal: "center", vertical: "center" };
+          cell.border = THIN_BORDER;
+          if (weekendDays.has(d)) {
+            cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: COLOR_WEEKEND } };
+          }
+        }
+        currentRow += 1;
+        continue;
+      }
+
       for (const { row, rowRange } of visibleRows) {
         // Marcador LISTO por MES: true/false para este mes concreto
         const monthKey = `${year}-${String(month).padStart(2, "0")}`;
