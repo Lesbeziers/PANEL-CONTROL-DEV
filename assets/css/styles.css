@@ -1876,3 +1876,49 @@ body {
 .firestore-error-banner__reload:hover {
   background: #f4f4f4;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Banner "cuota diaria agotada" — informativo (amarillo). Aparece cuando los  */
+/* listeners de lectura fallan con resource-exhausted. Menos urgente que el     */
+/* rojo: los datos ya cargados siguen ahí, solo se corta el tiempo real.       */
+/* Si ambos banners coinciden, el rojo (z 10000) va por encima del amarillo.   */
+/* -------------------------------------------------------------------------- */
+.firestore-quota-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 12px 24px;
+  background: #e0a800;
+  color: #1c1c1c;
+  font-weight: 600;
+  font-size: 14px;
+  line-height: 1.4;
+  text-align: center;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+  z-index: 9999;
+}
+.firestore-quota-banner.is-visible {
+  display: flex;
+}
+.firestore-quota-banner__text {
+  max-width: 1000px;
+}
+.firestore-quota-banner__reload {
+  background: #1c1c1c;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 14px;
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.firestore-quota-banner__reload:hover {
+  background: #333;
+}

@@ -7251,6 +7251,67 @@ function markFirestoreWriteOk() {
   if (firestoreErrorBannerEl) firestoreErrorBannerEl.classList.remove("is-visible");
 }
 
+// -----------------------------------------------------------------------------
+// Banner "cuota diaria agotada"
+//
+// Firestore en plan Spark tiene un tope de 50k lecturas/día. Cuando se
+// alcanza, los listeners onSnapshot fallan con el código "resource-exhausted"
+// y el panel deja de recibir cambios en tiempo real (aunque los datos ya
+// cargados siguen visibles y las escrituras siguen entrando hasta agotar su
+// propio tope). El fallo es SILENCIOSO por defecto — este banner lo hace
+// visible para que los editores sepan que no están viendo los últimos
+// cambios y coordinen por otro canal hasta el reset (medianoche Pacífico).
+//
+// Distinto del banner rojo de escritura: este es informativo (amarillo), no
+// implica pérdida inminente. Se resetea solo cada día.
+// -----------------------------------------------------------------------------
+let firestoreQuotaBannerEl = null;
+let firestoreQuotaExhausted = false;
+
+function ensureFirestoreQuotaBanner() {
+  if (firestoreQuotaBannerEl && document.body.contains(firestoreQuotaBannerEl)) {
+    return firestoreQuotaBannerEl;
+  }
+  const el = document.createElement("div");
+  el.className = "firestore-quota-banner";
+  el.innerHTML = `
+    <span class="firestore-quota-banner__text">
+      ⚠ Se ha alcanzado el límite diario de Firebase. El panel podría no mostrar
+      los últimos cambios de otros editores en tiempo real. Se restablecerá
+      automáticamente esta noche. Coordina los cambios importantes por otro canal
+      hasta entonces.
+    </span>
+    <button type="button" class="firestore-quota-banner__reload">Recargar</button>
+  `;
+  el.querySelector(".firestore-quota-banner__reload").addEventListener("click", () => {
+    window.location.reload();
+  });
+  document.body.appendChild(el);
+  firestoreQuotaBannerEl = el;
+  return el;
+}
+
+// Devuelve true si el error de Firestore es por cuota agotada.
+function isQuotaExhaustedError(err) {
+  const code = err?.code || "";
+  return code === "resource-exhausted"
+    || /resource-exhausted|quota|RESOURCE_EXHAUSTED/i.test(err?.message || "");
+}
+
+// Punto único al que llegan TODOS los onError de los listeners de lectura.
+// Si es cuota → banner amarillo. Otros errores se dejan a su console.error
+// de siempre (no queremos falsos positivos de red intermitente).
+function handleFirestoreListenerError(source, err) {
+  console.error(`[${source}] listener error:`, err?.code || err);
+  if (isQuotaExhaustedError(err)) {
+    if (!firestoreQuotaExhausted) {
+      firestoreQuotaExhausted = true;
+      console.warn("[firestore-quota] cuota diaria agotada — mostrando banner");
+    }
+    ensureFirestoreQuotaBanner().classList.add("is-visible");
+  }
+}
+
 function scheduleFirestoreRowSync(row, blockId) {
   if (!isFirestoreSourceActive()) return;
   if (!row?.rowKey || row._autoPlaceholder) return;
@@ -7382,7 +7443,7 @@ function startFirestoreRealtimeListener() {
   if (!window.PanelFirebase?.listenToPanelRows) return;
   firestoreRealtimeUnsub = window.PanelFirebase.listenToPanelRows(
     handleFirestoreSnapshotBatch,
-    (err) => console.error("[firestore-live] listener error:", err)
+    (err) => handleFirestoreListenerError("firestore-live", err)
   );
 }
 
@@ -7399,7 +7460,7 @@ function startFirestoreHistoryListener() {
     if (historyPanelOpen && typeof renderHistoryPanelContents === "function") {
       renderHistoryPanelContents();
     }
-  }, (err) => console.error("[history] listener error:", err));
+  }, (err) => handleFirestoreListenerError("history", err));
 }
 
 // Añade una entrada al historial en Firestore. No-op si el flag está en false.
@@ -7945,7 +8006,7 @@ async function startFirestorePresenceTracking() {
 
   firestorePresenceUnsub = window.PanelFirebase.listenToPresence(
     handleRemotePresenceChange,
-    (err) => console.error("[presence] listener error:", err)
+    (err) => handleFirestoreListenerError("presence", err)
   );
 
   // Barre entradas expiradas cada X segundos para que la UI las quite sin
@@ -7974,7 +8035,7 @@ function startCellLocksListener() {
   if (!window.PanelFirebase?.listenToCellLocks) return;
   cellLocksUnsub = window.PanelFirebase.listenToCellLocks(
     handleRemoteCellLockChange,
-    (err) => console.error("[cell-lock] listener error:", err)
+    (err) => handleFirestoreListenerError("cell-lock", err)
   );
   cellLocksSweepTimer = setInterval(sweepExpiredCellLocks, LOCK_SWEEP_INTERVAL_MS);
 
