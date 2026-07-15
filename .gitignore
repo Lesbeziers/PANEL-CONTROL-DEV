@@ -10,3 +10,10 @@ Thumbs.db
 # Logs / temp
 *.log
 *.tmp
+
+# Backups generados localmente (los reales van como artifacts de GitHub)
+backups-out/
+
+# Service account keys — NUNCA subir al repo
+*firebase-adminsdk*.json
+*service-account*.json
