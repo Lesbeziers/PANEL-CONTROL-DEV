@@ -1,0 +1,39 @@
+name: Backup Firestore (xlsx)
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install firebase-admin openpyxl
+
+      - name: Generate backup xlsx
+        env:
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          PANEL_ID: main
+          BACKUP_OUT_DIR: backups-out
+        run: python3 scripts/backup_firestore_to_xlsx.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: panel-backup-${{ github.run_id }}
+          path: backups-out/*.xlsx
+          retention-days: 30
+          if-no-files-found: error
