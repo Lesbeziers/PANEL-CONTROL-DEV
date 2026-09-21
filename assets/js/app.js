@@ -5716,7 +5716,13 @@ function attachGenreCell(cell, row) {
 
     const commit = () => {
       if (!cancelled) {
-        setCellValue(cell, row.genre, { type: "edit", groupKey: `${cell.dataset.blockIndex}:${cell.dataset.rowIndex}:${cell.dataset.columnKey}` });
+        // El clic/Enter en el desplegable ya han puesto row.genre al valor
+        // elegido. Restauramos el valor original ANTES de setCellValue para que
+        // este detecte el cambio (before !== after) y dispare la sincronizacion
+        // a Firestore y el historial. Sin esto, before === after y no se guardaba.
+        const chosenGenre = row.genre;
+        row.genre = originalValue;
+        setCellValue(cell, chosenGenre, { type: "edit", groupKey: `${cell.dataset.blockIndex}:${cell.dataset.rowIndex}:${cell.dataset.columnKey}` });
       }
       cleanup();
     };
