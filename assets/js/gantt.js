@@ -61,6 +61,7 @@
   };
   
   let observer = null;
+  let observerTarget = null;
   let rafId = null;
   let activeFocusRow = null;
   let activeFocusBlockRows = [];
@@ -225,7 +226,7 @@
   }
 
   function repaintAll(root) {
-    markCalendarCells(root);
+    runFullMark(root);
   }
 
   async function repaintUntilStable(root, { maxMs = 600 } = {}) {
@@ -1618,6 +1619,25 @@
     return Boolean(hasListoCheckbox || hasEditableTitleCell);
   }
 
+  // Ejecuta markCalendarCells con el MutationObserver PAUSADO, para que no
+  // observe las mutaciones que la propia funcion hace en el DOM. Sin esto se
+  // formaba un bucle infinito: markCalendarCells modifica el DOM -> el observer
+  // lo detecta -> vuelve a programar markCalendarCells -> ... (un repintado
+  // completo por frame que saturaba la CPU en equipos lentos).
+  function runFullMark(root) {
+    const target = observerTarget;
+    if (observer) {
+      observer.disconnect();
+    }
+    try {
+      markCalendarCells(root);
+    } finally {
+      if (observer && target) {
+        observer.observe(target, { childList: true, subtree: true });
+      }
+    }
+  }
+
   function scheduleMark(root) {
     if (rafId !== null) {
       return;
@@ -1625,7 +1645,7 @@
 
     rafId = window.requestAnimationFrame(() => {
       rafId = null;
-      markCalendarCells(root);
+      runFullMark(root);
     });
   }
 
@@ -1634,6 +1654,8 @@
     if (!targetNode) {
       return;
     }
+
+    observerTarget = targetNode;
 
     if (observer) {
       observer.disconnect();
@@ -1663,7 +1685,7 @@
       if (pendingFullRepaint) {
         pendingRowsToRepaint.clear();
         pendingFullRepaint = false;
-        markCalendarCells(root);
+        runFullMark(root);
         return;
       }
 
