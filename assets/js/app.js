@@ -9,7 +9,7 @@ const columns = [
     label: "GÉNERO",
     type: "text",
     cellType: "select",
-    options: ["Caza y Pesca", "Cine Compra", "Cine Original", "Deportes", "Documentales", "Entretenimiento", "M+", "No Ficción", "Series Compra", "Series Originales"],
+    options: ["", "Caza y Pesca", "Cine Compra", "Cine Original", "Deportes", "Documentales", "Entretenimiento", "M+", "No Ficción", "Series Compra", "Series Originales"],
   },
   { key: "id", label: "ID", type: "text" },
 ];
@@ -5745,7 +5745,12 @@ function attachGenreCell(cell, row) {
         if (index === highlightedIndex) {
           optionElement.classList.add("is-highlighted");
         }
-        optionElement.textContent = option;
+        if (option === "") {
+          optionElement.textContent = "— Ninguno —";
+          optionElement.classList.add("genre-dropdown-menu__option--none");
+        } else {
+          optionElement.textContent = option;
+        }
         optionElement.setAttribute("role", "option");
         optionElement.setAttribute("aria-selected", option === currentValue ? "true" : "false");
         optionElement.addEventListener("mousedown", (event) => event.preventDefault());

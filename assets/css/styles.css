@@ -931,6 +931,11 @@ body {
   font-weight: 700;
 }
 
+.genre-dropdown-menu__option--none {
+  color: #777;
+  font-style: italic;
+}
+
 .left-row > div.checkbox-cell {
   justify-content: center;
   padding: 0;
