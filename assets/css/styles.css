@@ -936,6 +936,61 @@ body {
   font-style: italic;
 }
 
+#panel-login-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.panel-login-card {
+  text-align: center;
+  padding: 32px 40px;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 12px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+  font-family: inherit;
+  max-width: 90vw;
+}
+
+.panel-login-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #222;
+  margin-bottom: 8px;
+}
+
+.panel-login-sub {
+  font-size: 14px;
+  color: #666;
+  margin-bottom: 20px;
+}
+
+.panel-login-btn {
+  font: inherit;
+  font-weight: 600;
+  padding: 10px 22px;
+  border: none;
+  border-radius: 8px;
+  background: #1a73e8;
+  color: #fff;
+  cursor: pointer;
+}
+
+.panel-login-btn:hover { background: #1669d6; }
+.panel-login-btn:disabled { background: #9db9e8; cursor: default; }
+
+.panel-login-msg {
+  margin-top: 14px;
+  font-size: 13px;
+  color: #c0392b;
+  min-height: 16px;
+}
+
 .left-row > div.checkbox-cell {
   justify-content: center;
   padding: 0;

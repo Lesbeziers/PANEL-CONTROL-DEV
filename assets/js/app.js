@@ -8065,6 +8065,45 @@ function startCellLocksListener() {
 //  vive directamente en bootInitialLoad → ensureAuthAndBoot, y sustituye por
 //  completo al gate de Drive.)
 
+// Pantalla de login del editor. En vez de lanzar el pop-up de Google
+// automáticamente al cargar (lo que los navegadores bloquean por no venir de un
+// gesto del usuario), mostramos un botón. El pop-up solo se abre al pulsarlo,
+// que SÍ cuenta como gesto y el navegador lo permite.
+function showPanelLoginOverlay(onSignIn) {
+  if (document.getElementById("panel-login-overlay")) { return; }
+  const overlay = document.createElement("div");
+  overlay.id = "panel-login-overlay";
+  overlay.innerHTML = `
+    <div class="panel-login-card">
+      <div class="panel-login-title">Panel de Control M+</div>
+      <div class="panel-login-sub">Inicia sesión con tu cuenta para editar el panel.</div>
+      <button id="panel-login-btn" type="button" class="panel-login-btn">Iniciar sesión con Google</button>
+      <div id="panel-login-msg" class="panel-login-msg"></div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const btn = overlay.querySelector("#panel-login-btn");
+  const msg = overlay.querySelector("#panel-login-msg");
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    msg.textContent = "Abriendo ventana de Google…";
+    // IMPORTANTE: onSignIn() se invoca aquí de forma síncrona dentro del handler
+    // del clic → el pop-up se abre como resultado directo del gesto y el
+    // navegador NO lo bloquea. No meter awaits antes de esta llamada.
+    let user = null;
+    try { user = await onSignIn(); } catch (_) { user = null; }
+    if (!user) {
+      btn.disabled = false;
+      msg.textContent = "No se pudo iniciar sesión. Inténtalo de nuevo.";
+    }
+    // Si el login va bien, onAuthChanged → bootEditorOnce oculta este overlay.
+  });
+}
+
+function hidePanelLoginOverlay() {
+  document.getElementById("panel-login-overlay")?.remove();
+}
+
 // Selector de fuente de datos. La rama dev tiene el flag activado; la rama
 // main lo mantendrá desactivado hasta el cutover final.
 function bootInitialLoad() {
@@ -8089,32 +8128,18 @@ function bootInitialLoad() {
     }
 
     // Editor: arranque de todo lo post-auth (datos + alias + presencia).
+    let editorBooted = false;
     const startEditorSideEffects = async () => {
       startFirestoreData();
       try { await ensureEditorName(); } catch (_) { /* opcional */ }
       startFirestorePresenceTracking();
     };
 
-    // Gate de Firebase Auth. Casos:
-    //   a) Ya hay sesión Firebase cacheada → arranque directo.
-    //   b) No hay sesión → popup de Google. Si el usuario firma, arranque.
-    //      Si cancela o falla, dejamos un toast y esperamos a que vuelva a
-    //      cargar la página (hard refresh).
-    const ensureAuthAndBoot = async () => {
-      if (!window.PanelFirebase?.auth) {
-        console.error("[auth] Firebase Auth no está inicializado");
-        return;
-      }
+    // Arranca el editor una sola vez, en cuanto hay un usuario firmado.
+    const bootEditorOnce = (user) => {
+      if (editorBooted || !user) { return; }
+      editorBooted = true;
       const expectedEmail = window.PANEL_CONFIG?.AUTHORIZED_EDITOR_EMAIL;
-      let user = window.PanelFirebase.auth.currentUser;
-      if (!user) {
-        user = await window.PanelFirebase.signInPanelUser();
-      }
-      if (!user) {
-        console.warn("[auth] sesión no obtenida — el editor no arrancará hasta que firmes");
-        showGridToast("Necesitas iniciar sesión para editar el panel");
-        return;
-      }
       if (expectedEmail && user.email !== expectedEmail) {
         // El usuario firmó con otra cuenta. Firestore rechazará sus escrituras
         // por las Rules. Avisamos claramente y arrancamos igualmente en modo
@@ -8122,7 +8147,37 @@ function bootInitialLoad() {
         console.warn(`[auth] cuenta ${user.email} no autorizada (se esperaba ${expectedEmail})`);
         showGridToast(`⚠️ Cuenta incorrecta (${user.email}). Firma con ${expectedEmail}`);
       }
+      hidePanelLoginOverlay();
       startEditorSideEffects();
+    };
+
+    // Gate de Firebase Auth. Casos:
+    //   a) Hay sesión (cacheada o restaurada) → arranque directo, sin molestar.
+    //   b) No hay sesión → mostramos pantalla con botón "Iniciar sesión". El
+    //      pop-up de Google solo se abre al PULSAR el botón (gesto de usuario),
+    //      así el navegador no lo bloquea. Antes saltaba solo al cargar y los
+    //      bloqueadores de pop-ups lo mataban en cada primer acceso.
+    const ensureAuthAndBoot = () => {
+      if (!window.PanelFirebase?.auth) {
+        console.error("[auth] Firebase Auth no está inicializado");
+        return;
+      }
+      const auth = window.PanelFirebase.auth;
+
+      // onAuthChanged nos da el estado de sesión ya resuelto (incluida la
+      // restauración asíncrona que hace Firebase al cargar): usuario o null.
+      window.PanelFirebase.onAuthChanged((user) => {
+        if (user) {
+          bootEditorOnce(user);
+        } else if (!editorBooted) {
+          showPanelLoginOverlay(() => window.PanelFirebase.signInPanelUser());
+        }
+      });
+
+      // Si ya hay usuario disponible de forma síncrona, arrancamos ya.
+      if (auth.currentUser) {
+        bootEditorOnce(auth.currentUser);
+      }
     };
 
     if (window.PanelFirebase?.auth) {
