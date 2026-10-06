@@ -9,7 +9,7 @@ const columns = [
     label: "GÉNERO",
     type: "text",
     cellType: "select",
-    options: ["", "Caza y Pesca", "Cine Compra", "Cine Original", "Deportes", "Documentales", "Entretenimiento", "M+", "No Ficción", "Series Compra", "Series Originales"],
+    options: ["", "Caza y Pesca", "Cine Compra", "Cine Original", "Deportes", "Documentales Compra", "Documentales Originales", "Entretenimiento", "M+", "Series Compra", "Series Originales"],
   },
   { key: "id", label: "ID", type: "text" },
 ];
