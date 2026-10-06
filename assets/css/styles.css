@@ -406,11 +406,11 @@ body {
 }
 
 .left-row {
-  grid-template-columns: 46px 64px 432px 82px 82px 140px 84px;
+  grid-template-columns: 46px 64px 392px 82px 82px 180px 84px;
 }
 
 .left-header {
-  grid-template-columns: 46px 64px 432px 82px 82px 140px 84px;
+  grid-template-columns: 46px 64px 392px 82px 82px 180px 84px;
 }
 
 .left-grid,
@@ -913,6 +913,7 @@ body {
   text-align: left;
   padding: 4px 8px;
   font: inherit;
+  font-size: 13px;
   font-weight: 400;
   cursor: pointer;
   white-space: nowrap;
