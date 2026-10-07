@@ -199,6 +199,7 @@ function newRow() {
     blockType: "",
     listoByMonth: {},
     actualizado: false,
+    archivePending: false,
     title: "",
     genre: "",
     startDateText: "",
@@ -462,7 +463,7 @@ function createDefaultBlocks() {
 }
 
 let blocks = createDefaultBlocks();
-let contextMenu = { open: false, x: 0, y: 0, blockIndex: -1, rowIndex: -1 };
+let contextMenu = { open: false, x: 0, y: 0, blockIndex: -1, rowIndex: -1, columnKey: null };
 let menuElement = null;
 let selectedCell = null;
 let sortState = { key: null, dir: "asc" };
@@ -6095,6 +6096,8 @@ function ensureContextMenuElement() {
     <button type="button" class="context-menu__item" data-action="delete" role="menuitem">Eliminar filas</button>
     <div class="context-menu__divider" role="separator"></div>
     <button type="button" class="context-menu__item" data-action="actualizado" role="menuitem">Marcar Actualizado</button>
+    <div class="context-menu__divider" role="separator" data-archive-divider></div>
+    <button type="button" class="context-menu__item" data-action="archive" role="menuitem">Pendiente Archivo</button>
   `;
 
   menuElement.addEventListener("click", (event) => {
@@ -6163,6 +6166,11 @@ function ensureContextMenuElement() {
       toggleRowActualizado(blockIndex, rowIndex);
       closeContextMenu();
     }
+
+    if (target.dataset.action === "archive") {
+      toggleRowArchivePending(blockIndex, rowIndex);
+      closeContextMenu();
+    }
   });
 
   document.body.appendChild(menuElement);
@@ -6189,6 +6197,17 @@ function updateContextMenuDeleteState() {
     actualizadoItem.classList.toggle("is-disabled", !enabled);
     actualizadoItem.textContent = row?.actualizado ? "Desmarcar Actualizado" : "Marcar Actualizado";
   }
+
+  // "Pendiente Archivo" / "Archivado": SOLO al hacer clic derecho en la columna ID.
+  const archiveItem = menuElement.querySelector('[data-action="archive"]');
+  const archiveDivider = menuElement.querySelector('[data-archive-divider]');
+  if (archiveItem) {
+    const archiveRow = blocks[contextMenu.blockIndex]?.rows?.[contextMenu.rowIndex];
+    const showArchive = contextMenu.columnKey === "id" && !!archiveRow && !archiveRow._autoPlaceholder;
+    archiveItem.style.display = showArchive ? "" : "none";
+    if (archiveDivider) archiveDivider.style.display = showArchive ? "" : "none";
+    archiveItem.textContent = archiveRow?.archivePending ? "Archivado" : "Pendiente Archivo";
+  }
 }
 
 function toggleRowActualizado(blockIndex, rowIndex) {
@@ -6212,6 +6231,26 @@ function toggleRowActualizado(blockIndex, rowIndex) {
   renderRows();
 }
 
+function toggleRowArchivePending(blockIndex, rowIndex) {
+  const block = blocks[blockIndex];
+  const row = block?.rows?.[rowIndex];
+  if (!row || row._autoPlaceholder) {
+    return;
+  }
+  const before = !!row.archivePending;
+  row.archivePending = !row.archivePending;
+  // Persistir en Firestore (mismo canal que el resto de campos de la fila).
+  scheduleFirestoreRowSync(row, block.id);
+  logMutationToHistory({
+    ...buildHistoryRowMeta(row, block),
+    kind: "cell",
+    column: "id",
+    before: before ? "pendiente archivo" : "—",
+    after: row.archivePending ? "pendiente archivo" : "—",
+  });
+  renderRows();
+}
+
 function handleOutsidePointer(event) {
   if (menuElement && !menuElement.contains(event.target)) {
     closeContextMenu();
@@ -6225,7 +6264,7 @@ function handleMenuEscape(event) {
 }
 
 function closeContextMenu() {
-  contextMenu = { open: false, x: 0, y: 0, blockIndex: -1, rowIndex: -1 };
+  contextMenu = { open: false, x: 0, y: 0, blockIndex: -1, rowIndex: -1, columnKey: null };
   if (menuElement) {
     menuElement.classList.remove("open");
   }
@@ -6237,12 +6276,17 @@ function openContextMenu(event, blockIndex, rowIndex) {
   if (IS_VIEWER_MODE) { event.preventDefault(); return; }
   event.preventDefault();
 
+  const columnKey = (event.target instanceof Element
+    ? event.target.closest("[data-column-key]")
+    : null)?.dataset?.columnKey || null;
+
   contextMenu = {
     open: true,
     x: event.clientX,
     y: event.clientY,
     blockIndex,
     rowIndex,
+    columnKey,
   };
 
   const menu = ensureContextMenuElement();
@@ -6616,6 +6660,7 @@ function attachIdTextCell(cell, row) {
   const renderReadMode = () => {
     cell.classList.remove("is-editing");
     cell.textContent = row.id || "";
+    cell.classList.toggle("id-archive-pending", !!row.archivePending);
   };
 
   const openEditMode = ({ replaceWith, keepContent = false } = {}) => {
@@ -7559,6 +7604,7 @@ function firestoreDocToRow(rowKey, data, blockType) {
     dateRangeError: null,
     listoByMonth: decodeListoByMonth(data.listoByMonth),
     actualizado: !!data.actualizado,
+    archivePending: !!data.archivePending,
     homeMonth: Number.isInteger(data.homeMonth) ? data.homeMonth : DEFAULT_CALENDAR_CONTEXT.month,
     homeYear: Number.isInteger(data.homeYear) ? data.homeYear : DEFAULT_CALENDAR_CONTEXT.year,
   };
@@ -7727,6 +7773,7 @@ function applyLiveRowChange({ type, rowKey, data, fromLocal }) {
     ["startDateText", "startDate"],
     ["endDateText", "endDate"],
     ["actualizado", "actualizado"],
+    ["archivePending", "id"],
   ];
   for (const [rowField, domColumnKey] of fields) {
     if (row[rowField] === remoteRow[rowField]) continue;

@@ -937,6 +937,12 @@ body {
   font-style: italic;
 }
 
+/* ID "Pendiente Archivo": texto en ámbar/naranja (contrasta sobre blanco). */
+.left-row > div.text-cell.id-archive-pending {
+  color: #d97706;
+  font-weight: 700;
+}
+
 #panel-login-overlay {
   position: fixed;
   inset: 0;
