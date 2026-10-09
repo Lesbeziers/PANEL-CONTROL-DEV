@@ -2521,13 +2521,13 @@ function preserveBlockCollapsedState(targetBlocks, sourceBlocks) {
 // logic still keeps everyone's changes consistent regardless.
 // =============================================================================
 const PRESENCE_KEY_PREFIX = "presence_";
-const PRESENCE_HEARTBEAT_MS = 20_000;
+const PRESENCE_HEARTBEAT_MS = 45_000; // 20s→45s: optimización de lecturas Firestore (presencia = fan-out N²)
 const PRESENCE_POLL_MS = 6_000;
 // While saving we beat much faster so the saving flag never goes stale before
 // the upload finishes — drive uploads can briefly exceed the normal heartbeat
 // interval and we don't want other sessions to evict our flag mid-save.
 const PRESENCE_SAVE_HEARTBEAT_MS = 4_000;
-const PRESENCE_STALE_MS = 60_000;
+const PRESENCE_STALE_MS = 120_000; // 60s→120s: acompaña al latido de 45s (margen de 2+ latidos, no desaparece en uso)
 // A saving flag is considered current if its epoch is within this window.
 // Slightly more lenient than presence staleness because saves take a few
 // seconds and we want the lock to hold for the full operation.
@@ -7823,8 +7823,8 @@ function applyLiveRowChange({ type, rowKey, data, fromLocal }) {
 // consideran huérfanos (crash/cierre brusco) y se ignoran.
 // =============================================================================
 
-const LOCK_HEARTBEAT_MS = 10_000;
-const LOCK_TTL_MS = 30_000;
+const LOCK_HEARTBEAT_MS = 20_000; // 10s→20s: optimización de lecturas (cada latido de lock se reparte a todos)
+const LOCK_TTL_MS = 60_000; // 30s→60s: acompaña al latido de 20s (no caduca mientras editas)
 const LOCK_SWEEP_INTERVAL_MS = 5_000;
 // Si el usuario no interactúa (teclado / ratón) durante este tiempo mientras
 // tiene una celda abierta, el heartbeat deja de reescribir y el lock cae por
